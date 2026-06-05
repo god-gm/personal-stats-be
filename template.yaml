@@ -1,0 +1,76 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Gods of Death — Guild Raid Monitor REST API
+
+Parameters:
+  JwtSecret:
+    Type: String
+    NoEcho: true
+    Description: "JWT signing secret (minimo 32 caratteri)"
+  DiscordClientId:
+    Type: String
+    Description: "Discord application Client ID"
+  DiscordClientSecret:
+    Type: String
+    NoEcho: true
+    Description: "Discord application Client Secret"
+  DiscordRedirectUri:
+    Type: String
+    Description: "Discord OAuth2 redirect URI (URL della pagina FE di callback)"
+
+Globals:
+  Api:
+    Cors:
+      AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+      AllowHeaders: "'Content-Type,Authorization'"
+      AllowOrigin: "'*'"
+  Function:
+    Runtime: java17
+    MemorySize: 1024   # Spring Boot ha bisogno di almeno 512 MB; 1024 riduce i cold start
+    Timeout: 30
+    Environment:
+      Variables:
+        SPRING_PROFILES_ACTIVE: lambda
+
+Resources:
+  MonitorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: com.godsofdeath.monitor.StreamLambdaHandler::handleRequest
+      CodeUri: target/monitor-1.0.0-SNAPSHOT.jar
+      Description: Gods of Death Raid Monitor REST API
+      Environment:
+        Variables:
+          JWT_SECRET: !Ref JwtSecret
+          DISCORD_CLIENT_ID: !Ref DiscordClientId
+          DISCORD_CLIENT_SECRET: !Ref DiscordClientSecret
+          DISCORD_REDIRECT_URI: !Ref DiscordRedirectUri
+      # Il ruolo IAM creato da SAM avrà queste policy DynamoDB
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: sp_anag_players
+        - DynamoDBCrudPolicy:
+            TableName: sys_config
+        - DynamoDBCrudPolicy:
+            TableName: sp_boss_lookup
+      Events:
+        # Cattura tutte le path con proxy
+        ApiProxy:
+          Type: Api
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+        # Cattura la root /
+        ApiRoot:
+          Type: Api
+          Properties:
+            Path: /
+            Method: ANY
+
+Outputs:
+  ApiUrl:
+    Description: "URL base dell'API Gateway (aggiungi /api/... per chiamare gli endpoint)"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
+  FunctionArn:
+    Description: "ARN della Lambda function"
+    Value: !GetAtt MonitorFunction.Arn

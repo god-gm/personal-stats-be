@@ -1,0 +1,10 @@
+# Profilo dev: avvia l'app come Spring Boot standalone con server embedded su porta 8080.
+# Attiva con: mvn spring-boot:run -Dspring-boot.run.profiles=dev
+# oppure impostando SPRING_PROFILES_ACTIVE=dev
+#
+# Le credenziali AWS sono lette da application.yml (access-key / secret-key).
+# Per usare DynamoDB Local: AWS_DYNAMODB_ENDPOINT=http://localhost:8000
+
+logging:
+  level:
+    com.godsofdeath: DEBUG

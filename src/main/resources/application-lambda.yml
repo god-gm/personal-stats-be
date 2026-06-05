@@ -1,0 +1,21 @@
+# Profilo lambda: attivato automaticamente da StreamLambdaHandler.
+# Le credenziali AWS NON sono necessarie: la Lambda usa il suo IAM Role.
+# Il JWT_SECRET DEVE essere passato come variabile d'ambiente Lambda.
+
+server:
+  servlet:
+    context-path: /god-player-monitor
+
+aws:
+  access-key: ''
+  secret-key: ''
+
+jwt:
+  secret: ${JWT_SECRET}   # obbligatorio: impostare come env var nella configurazione Lambda
+
+# Swagger disabilitato in produzione
+springdoc:
+  swagger-ui:
+    enabled: false
+  api-docs:
+    enabled: false

@@ -1,0 +1,53 @@
+spring:
+  application:
+    name: gods-of-death-monitor
+
+server:
+  port: 8080
+  servlet:
+    context-path: /
+
+# AWS DynamoDB
+aws:
+  region: eu-north-1
+  dynamodb:
+    endpoint: ${AWS_DYNAMODB_ENDPOINT:}   # vuoto = usa AWS reale; per local: http://localhost:8000
+  access-key: ${AWS_DYNAMODB_ACCESS_KEY:}
+  secret-key: ${AWS_DYNAMODB_SECRET_KEY:}
+
+# Nomi tabelle DynamoDB
+dynamodb:
+  tables:
+    players:     sp_anag_players
+    config:      sys_config
+    boss-lookup: sp_boss_lookup
+    admin-users: admin_users
+    anag-level:  sp_anag_level
+    anag-bosses: sp_anag_bosses
+    assignments: sp_assignments
+
+# JWT
+jwt:
+  secret: ${JWT_SECRET:GodsOfDeath_S3cr3t_K3y_!2026_CHANGE_IN_PROD}
+  expiration-seconds: 3600
+
+# Tacticus external API
+tacticus:
+  api:
+    base-url: https://api.tacticusgame.com/api/v1
+    timeout-seconds: 15
+
+# Discord OAuth2
+discord:
+  client-id: ${DISCORD_CLIENT_ID}
+  client-secret: ${DISCORD_CLIENT_SECRET}
+  redirect-uri: ${DISCORD_REDIRECT_URI}
+
+# SpringDoc / Swagger
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  api-docs:
+    path: /v3/api-docs
