@@ -33,5 +33,7 @@ public class CurrentSeasonDataDTO {
         private double playerAverage;
         private int playerAttackCount;
         private String performanceIndicator;
+        /** "consigliato" | "affrontabile" | "sconsigliato" | null (no saved assignment) */
+        private String assignmentType;
     }
 }

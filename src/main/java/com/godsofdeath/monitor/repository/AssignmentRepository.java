@@ -47,4 +47,14 @@ public class AssignmentRepository {
     public boolean existsByNameAndSeason(String name, int seasonNumber) {
         return findByNameAndSeason(name, seasonNumber).isPresent();
     }
+
+    /** Returns the most recently saved assignment for the given season (by CREATED_AT). */
+    public Optional<AssignmentDocument> findLatestBySeason(int seasonNumber) {
+        return table.scan(ScanEnhancedRequest.builder().build())
+                .items()
+                .stream()
+                .filter(d -> d.getSeasonNumber() != null && d.getSeasonNumber() == seasonNumber)
+                .max(Comparator.comparing(AssignmentDocument::getCreatedAt,
+                        Comparator.nullsFirst(Comparator.naturalOrder())));
+    }
 }

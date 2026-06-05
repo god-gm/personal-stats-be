@@ -1,10 +1,14 @@
 package com.godsofdeath.monitor.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.godsofdeath.monitor.document.AssignmentDocument;
 import com.godsofdeath.monitor.document.PlayerDocument;
 import com.godsofdeath.monitor.dto.output.CurrentSeasonDataDTO;
 import com.godsofdeath.monitor.dto.output.CurrentSeasonDataDTO.BossGroupDTO;
 import com.godsofdeath.monitor.dto.output.CurrentSeasonDataDTO.EncounterDTO;
 import com.godsofdeath.monitor.dto.output.GenericResponseDTO;
+import com.godsofdeath.monitor.repository.AssignmentRepository;
 import com.godsofdeath.monitor.repository.BossLookupRepository;
 import com.godsofdeath.monitor.repository.PlayerRepository;
 import com.godsofdeath.monitor.repository.SysConfigRepository;
@@ -24,6 +28,8 @@ public class RaidService {
     private final PlayerRepository      playerRepository;
     private final SysConfigRepository   sysConfigRepository;
     private final BossLookupRepository  bossLookupRepository;
+    private final AssignmentRepository  assignmentRepository;
+    private final ObjectMapper          objectMapper;
 
     @Value("${tacticus.api.base-url}")
     private String tacticusBaseUrl;
@@ -38,13 +44,18 @@ public class RaidService {
         int season = ((Number) apiData.getOrDefault("season", 0)).intValue();
         List<Map<String, Object>> entries = (List<Map<String, Object>>) apiData.getOrDefault("entries", List.of());
 
+        // --- Assegnazioni più recenti per questa season ---
+        Map<String, String> playerAssignments = loadPlayerAssignments(currentUserId, season);
+
         // --- Giocatori abilitati ---
         Map<String, PlayerDocument> enabledPlayers = playerRepository.findAllEnabled()
                 .stream()
                 .collect(Collectors.toMap(PlayerDocument::getUserId, p -> p));
 
         // --- Strutture di accumulo ---
-        // groupKey (type|rarity) → { label, rarity, unitOrder, units }
+        // groupKey (bossPrefix|rarity) es. "GuildBoss7|Legendary" → TypeGroup
+        // bossPrefix estratto dallo unitId garantisce che boss e i suoi mini (che condividono
+        // lo stesso prefisso GuildBossX) non vengano mai mescolati con altri encounter.
         Map<String, TypeGroup> typeGroups = new LinkedHashMap<>();
         Map<String, Integer> playerBombs  = new HashMap<>();
         Map<String, Integer> playerTokens = new HashMap<>();
@@ -60,28 +71,28 @@ public class RaidService {
             String rarity        = str(entry, "rarity");
             long   damageDealt   = toLong(entry, "damageDealt");
             long   remainingHp   = toLong(entry, "remainingHp");
-            int    set           = toInt(entry, "set");
+            long   maxHp         = toLong(entry, "maxHp");
 
-            if (!enabledPlayers.containsKey(userId)) continue;
-
-            // Bomb
+            // Bomb: traccia token solo per il giocatore corrente
             if ("Bomb".equals(damageType)) {
-                playerBombs.merge(userId, 1, Integer::sum);
+                if (userId.equals(currentUserId)) playerBombs.merge(userId, 1, Integer::sum);
                 continue;
             }
 
-            // Token
-            playerTokens.merge(userId, 1, Integer::sum);
+            // Token: traccia solo per il giocatore corrente
+            if (userId.equals(currentUserId)) playerTokens.merge(userId, 1, Integer::sum);
 
             // Solo Legendary e Mythic definiscono i gruppi di incontro
             if (!"Legendary".equals(rarity) && !"Mythic".equals(rarity)) continue;
 
-            String groupKey = type + "|" + rarity;
+            String bossPrefix = extractBossPrefix(unitId);   // es. "GuildBoss7"
+            String bossTypeCapture = type;                    // per lambda (effectively final)
+            String groupKey = bossPrefix + "|" + rarity;
             typeGroups.computeIfAbsent(groupKey, k -> {
                 String lbl = "Legendary".equals(rarity)
                         ? "L" + (++legendaryCounter[0])
                         : "M" + (++mythicCounter[0]);
-                return new TypeGroup(lbl, rarity);
+                return new TypeGroup(lbl, rarity, bossTypeCapture);
             });
             TypeGroup group = typeGroups.get(groupKey);
 
@@ -92,17 +103,29 @@ public class RaidService {
                 group.unitOrder.add(unitId);
             }
 
-            boolean isKillingBlow = (remainingHp == 0 && "Boss".equals(encounterType));
+            // Boss: killing blow = remainingHp == 0 → escludi
+            // SideBoss: killing blow = remainingHp == 0 AND damageDealt != maxHp → escludi
+            //           (solo kill su mini conta: remainingHp==0 ma damageDealt==maxHp)
+            boolean isKillingBlow = "Boss".equals(encounterType)
+                    ? remainingHp == 0
+                    : "SideBoss".equals(encounterType) && remainingHp == 0 && damageDealt != maxHp;
 
             UnitStats unit = group.units.get(unitId);
-            unit.playerStats.computeIfAbsent(userId, k -> new PlayerUnitStats());
-            unit.playerStats.get(userId).attackCount++;
 
+            // Media gilda: tutti i giocatori dell'API response
             if (!isKillingBlow) {
-                unit.playerStats.get(userId).damageSum        += damageDealt;
-                unit.playerStats.get(userId).validAttackCount++;
                 unit.guildDamageSum  += damageDealt;
                 unit.guildAttackCount++;
+            }
+
+            // Stats individuali: solo il giocatore corrente
+            if (userId.equals(currentUserId)) {
+                unit.playerStats.computeIfAbsent(userId, k -> new PlayerUnitStats());
+                unit.playerStats.get(userId).attackCount++;
+                if (!isKillingBlow) {
+                    unit.playerStats.get(userId).damageSum        += damageDealt;
+                    unit.playerStats.get(userId).validAttackCount++;
+                }
             }
         }
 
@@ -114,7 +137,7 @@ public class RaidService {
         // LinkedHashMap preserva l'ordine di inserimento (= ordine di comparsa nel report)
         List<BossGroupDTO> bossGroups = typeGroups.entrySet().stream()
                 .filter(e -> e.getValue().units.values().stream().anyMatch(u -> u.guildAttackCount > 0))
-                .map(e -> buildBossGroup(e.getKey(), e.getValue(), currentUserId))
+                .map(e -> buildBossGroup(e.getKey(), e.getValue(), currentUserId, playerAssignments))
                 .filter(bg -> !bg.getEncounters().isEmpty())
                 .collect(Collectors.toList());
 
@@ -133,13 +156,17 @@ public class RaidService {
     // Helpers
     // ----------------------------------------------------------------
 
-    private BossGroupDTO buildBossGroup(String groupKey, TypeGroup group, String currentUserId) {
+    private BossGroupDTO buildBossGroup(String groupKey, TypeGroup group, String currentUserId,
+                                        Map<String, String> playerAssignments) {
+        // group.bossType = tipo boss dall'API (es. "RogalDorn"), usato per la chiave assignment
+        String bossApiType = group.bossType;
+
         // Nome boss: primo unitId di tipo Boss nel gruppo, decodificato dalla lookup
         String bossName = group.unitOrder.stream()
                 .filter(uid -> "Boss".equals(group.units.get(uid).encounterType))
                 .findFirst()
                 .map(uid -> resolveBossName(uid, false))
-                .orElseGet(() -> groupKey.split("\\|")[0]);
+                .orElse(bossApiType);
 
         List<EncounterDTO> encounters = new ArrayList<>();
 
@@ -167,6 +194,11 @@ public class RaidService {
             boolean isSide = !"Boss".equals(unit.encounterType);
             String name = resolveBossName(unitId, isSide);
 
+            String assignmentKey = isSide
+                    ? bossApiType + "__" + extractMiniTypeFromUnitId(unitId)
+                    : bossApiType;
+            String assignmentType = playerAssignments.get(assignmentKey);
+
             encounters.add(EncounterDTO.builder()
                     .unitId(unitId)
                     .name(name)
@@ -175,6 +207,7 @@ public class RaidService {
                     .playerAverage(Math.round(playerAverage * 100.0) / 100.0)
                     .playerAttackCount(ps.attackCount)
                     .performanceIndicator(indicator)
+                    .assignmentType(assignmentType)
                     .build());
         }
 
@@ -183,6 +216,50 @@ public class RaidService {
                 .bossName(bossName)
                 .encounters(encounters)
                 .build();
+    }
+
+    private Map<String, String> loadPlayerAssignments(String userId, int seasonNumber) {
+        Optional<AssignmentDocument> doc = assignmentRepository.findLatestBySeason(seasonNumber);
+        if (doc.isEmpty()) return Collections.emptyMap();
+        try {
+            JsonNode root = objectMapper.readTree(doc.get().getAssignmentData());
+            JsonNode assignmentsNode = root.get("assignments");
+            if (assignmentsNode == null) return Collections.emptyMap();
+            JsonNode playerNode = assignmentsNode.get(userId);
+            if (playerNode == null || !playerNode.isObject()) return Collections.emptyMap();
+            Map<String, String> result = new HashMap<>();
+            playerNode.fields().forEachRemaining(e -> result.put(e.getKey(), e.getValue().asText()));
+            return result;
+        } catch (Exception e) {
+            return Collections.emptyMap();
+        }
+    }
+
+    private String extractMiniTypeFromUnitId(String unitId) {
+        if (unitId.contains("MiniBoss")) {
+            int idx = unitId.indexOf("MiniBoss");
+            String rest = unitId.substring(idx + "MiniBoss".length());
+            if (!rest.isEmpty() && Character.isDigit(rest.charAt(0))) {
+                rest = rest.substring(1);
+            }
+            return rest;
+        }
+        return unitId;
+    }
+
+    /**
+     * Estrae il prefisso encounter da uno unitId.
+     * Es. "GuildBoss7Boss1AstraRogaldorn"     → "GuildBoss7"
+     *     "GuildBoss7MiniBoss1AstraPrimarisPsy" → "GuildBoss7"
+     * Boss e mini dello stesso encounter condividono questo prefisso.
+     */
+    private String extractBossPrefix(String unitId) {
+        if (unitId.startsWith("GuildBoss")) {
+            int i = "GuildBoss".length();
+            while (i < unitId.length() && Character.isDigit(unitId.charAt(i))) i++;
+            return unitId.substring(0, i);
+        }
+        return unitId;
     }
 
     private String resolveBossName(String unitId, boolean sideMode) {
@@ -230,14 +307,16 @@ public class RaidService {
     // ----------------------------------------------------------------
 
     private static class TypeGroup {
-        String label;    // "L1", "M2", ecc.
-        String rarity;   // "Legendary" o "Mythic"
+        String label;     // "L1", "M2", ecc.
+        String rarity;    // "Legendary" o "Mythic"
+        String bossType;  // tipo boss dall'API, es. "RogalDorn" (per chiave assignment e display)
         List<String> unitOrder = new ArrayList<>();
         Map<String, UnitStats> units = new LinkedHashMap<>();
 
-        TypeGroup(String label, String rarity) {
-            this.label  = label;
-            this.rarity = rarity;
+        TypeGroup(String label, String rarity, String bossType) {
+            this.label    = label;
+            this.rarity   = rarity;
+            this.bossType = bossType;
         }
     }
 
