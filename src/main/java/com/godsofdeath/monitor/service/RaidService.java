@@ -194,10 +194,9 @@ public class RaidService {
             boolean isSide = !"Boss".equals(unit.encounterType);
             String name = resolveBossName(unitId, isSide);
 
-            String assignmentKey = isSide
-                    ? bossApiType + "__" + extractMiniTypeFromUnitId(unitId)
-                    : bossApiType;
-            String assignmentType = playerAssignments.get(assignmentKey);
+            String miniType = isSide ? extractMiniTypeFromUnitId(unitId) : null;
+            String lookupKey = group.rarity + "|" + bossApiType + (miniType != null ? "__" + miniType : "");
+            String assignmentType = playerAssignments.get(lookupKey);
 
             encounters.add(EncounterDTO.builder()
                     .unitId(unitId)
@@ -218,17 +217,68 @@ public class RaidService {
                 .build();
     }
 
+    /**
+     * Loads player assignments and returns a map keyed by "rarity|apiType" (boss)
+     * or "rarity|apiType__miniType" (mini). Rarity is derived from stats.bosses.levelDesc:
+     * levelDesc starting with "M" → Mythic, otherwise → Legendary.
+     * Supports both new-format keys ("levelId_apiType") and old-format ("apiType").
+     */
     private Map<String, String> loadPlayerAssignments(String userId, int seasonNumber) {
         Optional<AssignmentDocument> doc = assignmentRepository.findLatestBySeason(seasonNumber);
         if (doc.isEmpty()) return Collections.emptyMap();
         try {
             JsonNode root = objectMapper.readTree(doc.get().getAssignmentData());
+
+            Map<String, String> rawAssignments = new HashMap<>();
             JsonNode assignmentsNode = root.get("assignments");
-            if (assignmentsNode == null) return Collections.emptyMap();
-            JsonNode playerNode = assignmentsNode.get(userId);
-            if (playerNode == null || !playerNode.isObject()) return Collections.emptyMap();
+            if (assignmentsNode != null) {
+                JsonNode playerNode = assignmentsNode.get(userId);
+                if (playerNode != null && playerNode.isObject()) {
+                    playerNode.fields().forEachRemaining(e -> rawAssignments.put(e.getKey(), e.getValue().asText()));
+                }
+            }
+
+            // Build rarity|apiType → levelId from stats.bosses (levelDesc "M*" = Mythic, else Legendary)
+            Map<String, Integer> bossRarityToLevelId = new HashMap<>();
+            JsonNode statsNode = root.get("stats");
+            if (statsNode != null) {
+                JsonNode bossesNode = statsNode.get("bosses");
+                if (bossesNode != null && bossesNode.isArray()) {
+                    for (JsonNode b : bossesNode) {
+                        String apiType   = b.path("apiType").asText("");
+                        String levelDesc = b.path("levelDesc").asText("");
+                        int    levelId   = b.path("levelId").asInt();
+                        String rarity    = levelDesc.startsWith("M") ? "Mythic" : "Legendary";
+                        bossRarityToLevelId.put(rarity + "|" + apiType, levelId);
+                    }
+                }
+            }
+
+            // Build result: "rarity|apiType" → value, "rarity|apiType__miniType" → value
             Map<String, String> result = new HashMap<>();
-            playerNode.fields().forEachRemaining(e -> result.put(e.getKey(), e.getValue().asText()));
+            for (Map.Entry<String, Integer> entry : bossRarityToLevelId.entrySet()) {
+                String rarityApiType = entry.getKey();
+                int    levelId       = entry.getValue();
+                String apiType       = rarityApiType.substring(rarityApiType.indexOf('|') + 1);
+                String newBossKey    = levelId + "_" + apiType;
+                String oldBossKey    = apiType;
+
+                String bossValue = rawAssignments.containsKey(newBossKey)
+                        ? rawAssignments.get(newBossKey) : rawAssignments.get(oldBossKey);
+                if (bossValue != null) result.put(rarityApiType, bossValue);
+
+                for (Map.Entry<String, String> ae : rawAssignments.entrySet()) {
+                    String k = ae.getKey();
+                    String miniPart = null;
+                    if (k.startsWith(newBossKey + "__")) {
+                        miniPart = k.substring(newBossKey.length() + 2);
+                    } else if (k.startsWith(oldBossKey + "__") && !k.matches("^\\d+_.*")) {
+                        miniPart = k.substring(oldBossKey.length() + 2);
+                    }
+                    if (miniPart != null) result.put(rarityApiType + "__" + miniPart, ae.getValue());
+                }
+            }
+
             return result;
         } catch (Exception e) {
             return Collections.emptyMap();
