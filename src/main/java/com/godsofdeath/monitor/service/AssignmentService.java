@@ -393,15 +393,16 @@ public class AssignmentService {
             List<AssignmentStatsDTO.ConfiguredBossDTO> bosses,
             Map<String, PlayerDocument> enabledPlayers) {
 
-        // All target keys: "apiType" for boss, "apiType__miniUnitId" for mini
+        // All target keys: "levelId_apiType" for boss, "levelId_apiType__miniUnitId" for mini
         List<String> targetKeys = new ArrayList<>();
         Map<String, Double> guildAvgByKey = new HashMap<>();
 
         for (AssignmentStatsDTO.ConfiguredBossDTO b : bosses) {
-            targetKeys.add(b.getApiType());
-            guildAvgByKey.put(b.getApiType(), b.getGuildAverage());
+            String bossKey = b.getLevelId() + "_" + b.getApiType();
+            targetKeys.add(bossKey);
+            guildAvgByKey.put(bossKey, b.getGuildAverage());
             for (AssignmentStatsDTO.MiniDTO m : b.getMinis()) {
-                String key = b.getApiType() + "__" + m.getUnitId();
+                String key = bossKey + "__" + m.getUnitId();
                 targetKeys.add(key);
                 guildAvgByKey.put(key, m.getGuildAverage());
             }
@@ -412,17 +413,18 @@ public class AssignmentService {
         for (PlayerDocument p : enabledPlayers.values()) {
             Map<String, Double> deltas = new HashMap<>();
             for (AssignmentStatsDTO.ConfiguredBossDTO b : bosses) {
+                String bossKey = b.getLevelId() + "_" + b.getApiType();
                 double d = b.getPlayerStats().stream()
                         .filter(ps -> ps.getUserId().equals(p.getUserId()))
                         .mapToDouble(AssignmentStatsDTO.PlayerStatDTO::getDelta)
                         .findFirst().orElse(Double.NEGATIVE_INFINITY);
-                deltas.put(b.getApiType(), d);
+                deltas.put(bossKey, d);
                 for (AssignmentStatsDTO.MiniDTO m : b.getMinis()) {
                     double dm = m.getPlayerStats().stream()
                             .filter(ps -> ps.getUserId().equals(p.getUserId()))
                             .mapToDouble(AssignmentStatsDTO.PlayerStatDTO::getDelta)
                             .findFirst().orElse(Double.NEGATIVE_INFINITY);
-                    deltas.put(b.getApiType() + "__" + m.getUnitId(), dm);
+                    deltas.put(bossKey + "__" + m.getUnitId(), dm);
                 }
             }
             playerDeltas.put(p.getUserId(), deltas);
@@ -452,10 +454,11 @@ public class AssignmentService {
         List<String> bossKeysReversed = new ArrayList<>();
         for (int i = bosses.size() - 1; i >= 0; i--) {
             AssignmentStatsDTO.ConfiguredBossDTO b = bosses.get(i);
-            bossKeysReversed.add(b.getApiType());
+            String bossKey = b.getLevelId() + "_" + b.getApiType();
+            bossKeysReversed.add(bossKey);
             List<AssignmentStatsDTO.MiniDTO> minis = b.getMinis();
             for (int j = minis.size() - 1; j >= 0; j--) {
-                bossKeysReversed.add(b.getApiType() + "__" + minis.get(j).getUnitId());
+                bossKeysReversed.add(bossKey + "__" + minis.get(j).getUnitId());
             }
         }
 
