@@ -29,7 +29,7 @@ dynamodb:
 # JWT
 jwt:
   secret: ${JWT_SECRET:GodsOfDeath_S3cr3t_K3y_!2026_CHANGE_IN_PROD}
-  expiration-seconds: 3600
+  expiration-seconds: 604800
 
 # Tacticus external API
 tacticus:
