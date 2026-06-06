@@ -125,6 +125,9 @@ public class RaidService {
                 if (!isKillingBlow) {
                     unit.playerStats.get(userId).damageSum        += damageDealt;
                     unit.playerStats.get(userId).validAttackCount++;
+                    if (damageDealt > unit.playerStats.get(userId).maxDamage) {
+                        unit.playerStats.get(userId).maxDamage = damageDealt;
+                    }
                 }
             }
         }
@@ -204,6 +207,7 @@ public class RaidService {
                     .encounterType(unit.encounterType)
                     .guildAverage(Math.round(guildAverage * 100.0) / 100.0)
                     .playerAverage(Math.round(playerAverage * 100.0) / 100.0)
+                    .playerBest(ps.maxDamage)
                     .playerAttackCount(ps.attackCount)
                     .performanceIndicator(indicator)
                     .assignmentType(assignmentType)
@@ -381,6 +385,7 @@ public class RaidService {
 
     private static class PlayerUnitStats {
         long damageSum;
+        long maxDamage;
         int  attackCount;
         int  validAttackCount;
     }

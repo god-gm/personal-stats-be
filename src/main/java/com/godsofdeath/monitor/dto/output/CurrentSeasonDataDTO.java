@@ -31,6 +31,7 @@ public class CurrentSeasonDataDTO {
         private String encounterType;
         private double guildAverage;
         private double playerAverage;
+        private double playerBest;
         private int playerAttackCount;
         private String performanceIndicator;
         /** "consigliato" | "affrontabile" | "sconsigliato" | null (no saved assignment) */
