@@ -44,8 +44,8 @@ public class RaidService {
         int season = ((Number) apiData.getOrDefault("season", 0)).intValue();
         List<Map<String, Object>> entries = (List<Map<String, Object>>) apiData.getOrDefault("entries", List.of());
 
-        // --- Assegnazioni più recenti per questa season ---
-        Map<String, String> playerAssignments = loadPlayerAssignments(currentUserId, season);
+        // --- Carica assignment (usato per gruppi scheletro E per i badge assegnazione) ---
+        Optional<AssignmentDocument> assignmentDoc = assignmentRepository.findLatestBySeason(season);
 
         // --- Giocatori abilitati ---
         Map<String, PlayerDocument> enabledPlayers = playerRepository.findAllEnabled()
@@ -132,14 +132,21 @@ public class RaidService {
             }
         }
 
+        // --- Aggiunge gruppi scheletro per boss non ancora combattuti (inizio season) ---
+        addSkeletonGroupsFromAssignment(assignmentDoc, typeGroups);
+
+        // --- Assegnazioni per il player corrente ---
+        Map<String, String> playerAssignments = loadPlayerAssignments(currentUserId, assignmentDoc);
+
         // --- Player corrente ---
         PlayerDocument currentPlayer = enabledPlayers.get(currentUserId);
         String playerName = currentPlayer != null ? currentPlayer.getUserGameName() : currentUserId;
 
         // --- Costruzione bossGroups ---
-        // LinkedHashMap preserva l'ordine di inserimento (= ordine di comparsa nel report)
+        // I gruppi scheletro (fromAssignment=true) passano sempre il filtro anche senza dati reali
         List<BossGroupDTO> bossGroups = typeGroups.entrySet().stream()
-                .filter(e -> e.getValue().units.values().stream().anyMatch(u -> u.guildAttackCount > 0))
+                .filter(e -> e.getValue().fromAssignment
+                          || e.getValue().units.values().stream().anyMatch(u -> u.guildAttackCount > 0))
                 .map(e -> buildBossGroup(e.getKey(), e.getValue(), currentUserId, playerAssignments))
                 .filter(bg -> !bg.getEncounters().isEmpty())
                 .collect(Collectors.toList());
@@ -227,8 +234,7 @@ public class RaidService {
      * levelDesc starting with "M" → Mythic, otherwise → Legendary.
      * Supports both new-format keys ("levelId_apiType") and old-format ("apiType").
      */
-    private Map<String, String> loadPlayerAssignments(String userId, int seasonNumber) {
-        Optional<AssignmentDocument> doc = assignmentRepository.findLatestBySeason(seasonNumber);
+    private Map<String, String> loadPlayerAssignments(String userId, Optional<AssignmentDocument> doc) {
         if (doc.isEmpty()) return Collections.emptyMap();
         try {
             JsonNode root = objectMapper.readTree(doc.get().getAssignmentData());
@@ -286,6 +292,75 @@ public class RaidService {
             return result;
         } catch (Exception e) {
             return Collections.emptyMap();
+        }
+    }
+
+    /**
+     * Per ogni boss presente nell'assignment salvato ma assente in typeGroups,
+     * aggiunge un TypeGroup scheletro (0 attacchi) così la card compare anche
+     * a inizio season quando l'API non ha ancora dati di combattimento.
+     */
+    private void addSkeletonGroupsFromAssignment(Optional<AssignmentDocument> doc,
+                                                  Map<String, TypeGroup> typeGroups) {
+        if (doc.isEmpty()) return;
+        try {
+            JsonNode root      = objectMapper.readTree(doc.get().getAssignmentData());
+            JsonNode statsNode = root.get("stats");
+            if (statsNode == null) return;
+            JsonNode bossesNode = statsNode.get("bosses");
+            if (bossesNode == null || !bossesNode.isArray()) return;
+
+            for (JsonNode b : bossesNode) {
+                String apiType   = b.path("apiType").asText("");
+                String levelDesc = b.path("levelDesc").asText("L?");
+                if (apiType.isEmpty()) continue;
+
+                String rarity = levelDesc.startsWith("M") ? "Mythic" : "Legendary";
+
+                JsonNode minisNode = b.get("minis");
+
+                // Cerca un gruppo reale già esistente per questo bossType + rarity
+                TypeGroup existing = typeGroups.values().stream()
+                        .filter(g -> g.bossType.equals(apiType) && g.rarity.equals(rarity))
+                        .findFirst().orElse(null);
+
+                if (existing != null) {
+                    // Gruppo reale presente: controlla se mancano mini (0 attacchi nell'API)
+                    if (minisNode != null && minisNode.isArray()) {
+                        for (JsonNode m : minisNode) {
+                            String miniUnitId = m.path("unitId").asText("");
+                            if (miniUnitId.isEmpty()) continue;
+                            boolean miniPresent = existing.unitOrder.stream()
+                                    .anyMatch(uid -> extractMiniTypeFromUnitId(uid).equals(miniUnitId));
+                            if (!miniPresent) {
+                                existing.unitOrder.add(miniUnitId);
+                                existing.units.put(miniUnitId, new UnitStats("SideBoss"));
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // Gruppo mancante del tutto: crea skeleton completo
+                TypeGroup skeleton = new TypeGroup(levelDesc, rarity, apiType);
+                skeleton.fromAssignment = true;
+
+                skeleton.unitOrder.add(apiType);
+                skeleton.units.put(apiType, new UnitStats("Boss"));
+
+                if (minisNode != null && minisNode.isArray()) {
+                    for (JsonNode m : minisNode) {
+                        String miniUnitId = m.path("unitId").asText("");
+                        if (miniUnitId.isEmpty()) continue;
+                        skeleton.unitOrder.add(miniUnitId);
+                        skeleton.units.put(miniUnitId, new UnitStats("SideBoss"));
+                    }
+                }
+
+                typeGroups.put(apiType + "|" + rarity, skeleton);
+            }
+        } catch (Exception ignored) {
+            // Best-effort: se il JSON è malformato si mostra solo ciò che arriva dall'API
         }
     }
 
@@ -361,9 +436,10 @@ public class RaidService {
     // ----------------------------------------------------------------
 
     private static class TypeGroup {
-        String label;     // "L1", "M2", ecc.
-        String rarity;    // "Legendary" o "Mythic"
-        String bossType;  // tipo boss dall'API, es. "RogalDorn" (per chiave assignment e display)
+        String label;          // "L1", "M2", ecc.
+        String rarity;         // "Legendary" o "Mythic"
+        String bossType;       // tipo boss dall'API, es. "RogalDorn"
+        boolean fromAssignment; // gruppo scheletro da assignment (nessun dato reale)
         List<String> unitOrder = new ArrayList<>();
         Map<String, UnitStats> units = new LinkedHashMap<>();
 
