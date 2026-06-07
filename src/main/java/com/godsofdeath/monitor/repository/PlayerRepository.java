@@ -1,6 +1,7 @@
 package com.godsofdeath.monitor.repository;
 
 import com.godsofdeath.monitor.document.PlayerDocument;
+import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClient;
@@ -9,7 +10,9 @@ import software.amazon.awssdk.enhanced.dynamodb.Key;
 import software.amazon.awssdk.enhanced.dynamodb.TableSchema;
 import software.amazon.awssdk.enhanced.dynamodb.model.ScanEnhancedRequest;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -17,33 +20,36 @@ import java.util.stream.Collectors;
 public class PlayerRepository {
 
     private final DynamoDbTable<PlayerDocument> table;
+    private Map<String, PlayerDocument> cache; // userId → PlayerDocument
 
     public PlayerRepository(DynamoDbEnhancedClient client,
                             @Value("${dynamodb.tables.players}") String tableName) {
         this.table = client.table(tableName, TableSchema.fromBean(PlayerDocument.class));
     }
 
-    public Optional<PlayerDocument> findByDiscordNameIgnoreCase(String discordName) {
-        // Scan con FilterExpression: in produzione considera un GSI su DISCORD_NAME
-        return table.scan(ScanEnhancedRequest.builder().build())
+    @PostConstruct
+    void loadCache() {
+        cache = table.scan(ScanEnhancedRequest.builder().build())
                 .items()
                 .stream()
+                .collect(Collectors.toMap(PlayerDocument::getUserId, p -> p));
+    }
+
+    public Optional<PlayerDocument> findByDiscordNameIgnoreCase(String discordName) {
+        return cache.values().stream()
                 .filter(p -> "Y".equals(p.getEnabled())
                         && discordName.equalsIgnoreCase(stripAt(p.getDiscordName())))
                 .findFirst();
     }
 
     public List<PlayerDocument> findAllEnabled() {
-        return table.scan(ScanEnhancedRequest.builder().build())
-                .items()
-                .stream()
+        return cache.values().stream()
                 .filter(p -> "Y".equals(p.getEnabled()))
                 .collect(Collectors.toList());
     }
 
     public Optional<PlayerDocument> findById(String userId) {
-        return Optional.ofNullable(
-                table.getItem(Key.builder().partitionValue(userId).build()));
+        return Optional.ofNullable(cache.get(userId));
     }
 
     private String stripAt(String name) {
