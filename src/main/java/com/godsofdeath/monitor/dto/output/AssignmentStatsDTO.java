@@ -27,6 +27,8 @@ public class AssignmentStatsDTO {
         private double guildAverage;
         private List<PlayerStatDTO> playerStats;
         private List<MiniDTO>       minis;
+        /** True when no API battle data exists yet; all assignments are forced to sconsigliato. */
+        private boolean noStats;
     }
 
     @Data

@@ -13,6 +13,8 @@ public class AnagBossDocument {
     private String descrizione;
     private String codifica;
     private String replayLink;
+    private String miniDx;
+    private String miniSx;
 
     @DynamoDbPartitionKey
     @DynamoDbAttribute("ID")
@@ -26,4 +28,10 @@ public class AnagBossDocument {
 
     @DynamoDbAttribute("REPLAY_LINK")
     public String getReplayLink() { return replayLink; }
+
+    @DynamoDbAttribute("MINI_DX")
+    public String getMiniDx() { return miniDx; }
+
+    @DynamoDbAttribute("MINI_SX")
+    public String getMiniSx() { return miniSx; }
 }

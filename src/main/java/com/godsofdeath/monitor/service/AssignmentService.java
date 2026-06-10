@@ -105,10 +105,18 @@ public class AssignmentService {
                     }
                 }
             }
+            // Fallback: use CODIFICA when no API battles exist yet for this boss
+            if (apiType == null) {
+                apiType = bossDoc.get().getCodifica();
+            }
             if (apiType == null) continue;
 
+            boolean noStats = false;
             BossStats bossStats = statsMap.get(apiType);
-            if (bossStats == null) continue;
+            if (bossStats == null) {
+                noStats = true;
+                bossStats = buildEmptyBossStats(bossDoc.get());
+            }
 
             // Build player stats for the boss
             List<AssignmentStatsDTO.PlayerStatDTO> playerStatList =
@@ -142,6 +150,7 @@ public class AssignmentService {
                     .guildAverage(Math.round(bossStats.guildBossAvg * 100.0) / 100.0)
                     .playerStats(playerStatList)
                     .minis(minis)
+                    .noStats(noStats)
                     .build());
         }
 
@@ -393,6 +402,18 @@ public class AssignmentService {
             List<AssignmentStatsDTO.ConfiguredBossDTO> bosses,
             Map<String, PlayerDocument> enabledPlayers) {
 
+        // Collect target keys that have no API data — these are always sconsigliato
+        Set<String> noStatsKeys = new HashSet<>();
+        for (AssignmentStatsDTO.ConfiguredBossDTO b : bosses) {
+            if (b.isNoStats()) {
+                String bk = b.getLevelId() + "_" + b.getApiType();
+                noStatsKeys.add(bk);
+                for (AssignmentStatsDTO.MiniDTO m : b.getMinis()) {
+                    noStatsKeys.add(bk + "__" + m.getUnitId());
+                }
+            }
+        }
+
         // All target keys: "levelId_apiType" for boss, "levelId_apiType__miniUnitId" for mini
         List<String> targetKeys = new ArrayList<>();
         Map<String, Double> guildAvgByKey = new HashMap<>();
@@ -448,6 +469,11 @@ public class AssignmentService {
             assignments.put(p.getUserId(), pa);
         }
 
+        // Force sconsigliato for all no-stats targets regardless of ranking
+        for (Map<String, String> pa : assignments.values()) {
+            noStatsKeys.forEach(k -> pa.put(k, "sconsigliato"));
+        }
+
         // Balancing phase
         // Required: boss ≥10 consigliati, mini ≥4 consigliati
         // Process bosses in REVERSE configuration order
@@ -465,6 +491,7 @@ public class AssignmentService {
         List<String> playerIds = new ArrayList<>(enabledPlayers.keySet());
 
         for (String targetKey : bossKeysReversed) {
+            if (noStatsKeys.contains(targetKey)) continue;
             int required = targetKey.contains("__") ? 4 : 10;
             while (countConsigliati(assignments, targetKey) < required) {
                 // Find the player with minimum total assignments AND best delta for this target
@@ -495,6 +522,26 @@ public class AssignmentService {
                         .build())
                 .sorted(Comparator.comparing(AssignmentStatsDTO.PlayerAssignmentDTO::getPlayerName))
                 .collect(Collectors.toList());
+    }
+
+    private BossStats buildEmptyBossStats(AnagBossDocument bossDoc) {
+        BossStats bs = new BossStats();
+        bs.guildBossAvg = 0;
+        String miniDx = bossDoc.getMiniDx();
+        String miniSx = bossDoc.getMiniSx();
+        if (miniDx != null && !miniDx.isBlank()) {
+            UnitStats us = new UnitStats();
+            us.displayUnitId = miniDx;
+            us.encounterIndex = 0;
+            bs.miniUnitsOrdered.put(miniDx, us);
+        }
+        if (miniSx != null && !miniSx.isBlank()) {
+            UnitStats us = new UnitStats();
+            us.displayUnitId = miniSx;
+            us.encounterIndex = 1;
+            bs.miniUnitsOrdered.put(miniSx, us);
+        }
+        return bs;
     }
 
     private int countConsigliati(Map<String, Map<String, String>> all, String key) {
