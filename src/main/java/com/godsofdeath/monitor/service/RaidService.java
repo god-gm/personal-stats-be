@@ -194,6 +194,9 @@ public class RaidService {
             String indicator;
             if (ps.attackCount == 0) {
                 indicator = "none";
+            } else if (ps.validAttackCount == 0) {
+                // all attacks were killing blows — no valid average to compare
+                indicator = "none";
             } else if (guildAverage == 0) {
                 indicator = "average";
             } else {
