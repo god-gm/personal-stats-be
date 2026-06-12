@@ -25,6 +25,7 @@ dynamodb:
     anag-level:  sp_anag_level
     anag-bosses: sp_anag_bosses
     assignments: sp_assignments
+    hidden-sides: hidden_sides
 
 # JWT
 jwt:

@@ -60,4 +60,11 @@ public class AssignmentController {
         boolean found = assignmentService.existsAssignment(name, seasonNumber);
         return ResponseEntity.ok(GenericResponseDTO.ok("check", found));
     }
+
+    @GetMapping("/hidden-sides")
+    @Operation(summary = "Restituisce i side keys nascosti per un assignment")
+    public ResponseEntity<GenericResponseDTO<List<String>>> hiddenSides(
+            @RequestParam String name) {
+        return ResponseEntity.ok(assignmentService.loadHiddenSides(name));
+    }
 }

@@ -27,6 +27,7 @@ public class AssignmentService {
     private final PlayerRepository      playerRepository;
     private final SysConfigRepository   sysConfigRepository;
     private final AssignmentRepository  assignmentRepository;
+    private final HiddenSideRepository  hiddenSideRepository;
 
     @Value("${tacticus.api.base-url}")
     private String tacticusBaseUrl;
@@ -174,7 +175,15 @@ public class AssignmentService {
         doc.setCreatedAt(Instant.now().toString());
         doc.setAssignmentData(input.getAssignmentData());
         assignmentRepository.save(doc);
+
+        List<String> hiddenSides = input.getHiddenSides() != null ? input.getHiddenSides() : List.of();
+        hiddenSideRepository.save(input.getName(), hiddenSides);
+
         return GenericResponseDTO.ok("Salvataggio effettuato");
+    }
+
+    public GenericResponseDTO<List<String>> loadHiddenSides(String name) {
+        return GenericResponseDTO.ok("Hidden sides recuperati", hiddenSideRepository.findByAssignmentName(name));
     }
 
     public GenericResponseDTO<List<SavedAssignmentListDTO>> listSavedAssignments() {

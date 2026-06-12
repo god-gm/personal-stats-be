@@ -10,6 +10,7 @@ import com.godsofdeath.monitor.dto.output.CurrentSeasonDataDTO.EncounterDTO;
 import com.godsofdeath.monitor.dto.output.GenericResponseDTO;
 import com.godsofdeath.monitor.repository.AssignmentRepository;
 import com.godsofdeath.monitor.repository.BossLookupRepository;
+import com.godsofdeath.monitor.repository.HiddenSideRepository;
 import com.godsofdeath.monitor.repository.PlayerRepository;
 import com.godsofdeath.monitor.repository.SysConfigRepository;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +30,7 @@ public class RaidService {
     private final SysConfigRepository   sysConfigRepository;
     private final BossLookupRepository  bossLookupRepository;
     private final AssignmentRepository  assignmentRepository;
+    private final HiddenSideRepository  hiddenSideRepository;
     private final ObjectMapper          objectMapper;
 
     @Value("${tacticus.api.base-url}")
@@ -46,6 +48,9 @@ public class RaidService {
 
         // --- Carica assignment (usato per gruppi scheletro E per i badge assegnazione) ---
         Optional<AssignmentDocument> assignmentDoc = assignmentRepository.findLatestBySeason(season);
+
+        // --- Carica hidden sides per l'assignment corrente ---
+        Set<String> hiddenEncounterKeys = buildHiddenEncounterKeys(assignmentDoc);
 
         // --- Giocatori abilitati ---
         Map<String, PlayerDocument> enabledPlayers = playerRepository.findAllEnabled()
@@ -147,7 +152,7 @@ public class RaidService {
         List<BossGroupDTO> bossGroups = typeGroups.entrySet().stream()
                 .filter(e -> e.getValue().fromAssignment
                           || e.getValue().units.values().stream().anyMatch(u -> u.guildAttackCount > 0))
-                .map(e -> buildBossGroup(e.getKey(), e.getValue(), currentUserId, playerAssignments))
+                .map(e -> buildBossGroup(e.getKey(), e.getValue(), currentUserId, playerAssignments, hiddenEncounterKeys))
                 .filter(bg -> !bg.getEncounters().isEmpty())
                 .collect(Collectors.toList());
 
@@ -167,7 +172,8 @@ public class RaidService {
     // ----------------------------------------------------------------
 
     private BossGroupDTO buildBossGroup(String groupKey, TypeGroup group, String currentUserId,
-                                        Map<String, String> playerAssignments) {
+                                        Map<String, String> playerAssignments,
+                                        Set<String> hiddenEncounterKeys) {
         // group.bossType = tipo boss dall'API (es. "RogalDorn"), usato per la chiave assignment
         String bossApiType = group.bossType;
 
@@ -205,6 +211,13 @@ public class RaidService {
             }
 
             boolean isSide = !"Boss".equals(unit.encounterType);
+
+            // Salta i mini marcati come hidden nell'assignment
+            if (isSide) {
+                String miniType = extractMiniTypeFromUnitId(unitId);
+                if (hiddenEncounterKeys.contains(bossApiType + "__" + miniType)) continue;
+            }
+
             String name = resolveBossName(unitId, isSide);
 
             String miniType = isSide ? extractMiniTypeFromUnitId(unitId) : null;
@@ -364,6 +377,27 @@ public class RaidService {
             }
         } catch (Exception ignored) {
             // Best-effort: se il JSON è malformato si mostra solo ciò che arriva dall'API
+        }
+    }
+
+    /**
+     * Builds a Set of "apiType__miniType" keys for sides hidden in the latest assignment.
+     * Each hidden_side key has format "levelId_apiType__miniUnitId"; we strip the "levelId_" prefix.
+     */
+    private Set<String> buildHiddenEncounterKeys(Optional<AssignmentDocument> assignmentDoc) {
+        if (assignmentDoc.isEmpty()) return Collections.emptySet();
+        try {
+            List<String> sideKeys = hiddenSideRepository.findByAssignmentName(assignmentDoc.get().getName());
+            Set<String> result = new HashSet<>();
+            for (String key : sideKeys) {
+                int firstUnderscore = key.indexOf('_');
+                if (firstUnderscore < 0) continue;
+                // Strip leading "levelId_" to get "apiType__miniUnitId"
+                result.add(key.substring(firstUnderscore + 1));
+            }
+            return result;
+        } catch (Exception ignored) {
+            return Collections.emptySet();
         }
     }
 
