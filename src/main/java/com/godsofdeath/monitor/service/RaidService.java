@@ -215,7 +215,7 @@ public class RaidService {
             // Salta i mini marcati come hidden nell'assignment
             if (isSide) {
                 String miniType = extractMiniTypeFromUnitId(unitId);
-                if (hiddenEncounterKeys.contains(bossApiType + "__" + miniType)) continue;
+                if (hiddenEncounterKeys.contains(group.rarity + "|" + bossApiType + "__" + miniType)) continue;
             }
 
             String name = resolveBossName(unitId, isSide);
@@ -381,19 +381,50 @@ public class RaidService {
     }
 
     /**
-     * Builds a Set of "apiType__miniType" keys for sides hidden in the latest assignment.
-     * Each hidden_side key has format "levelId_apiType__miniUnitId"; we strip the "levelId_" prefix.
+     * Builds a Set of "rarity|apiType__miniType" keys for sides hidden in the latest assignment.
+     * Hidden side keys are stored as "levelId_apiType__miniUnitId"; we resolve rarity from the
+     * assignment JSON (levelDesc starting with "M" → Mythic, else Legendary) so that the same
+     * boss appearing at both Legendary and Mythic tiers is disambiguated correctly.
      */
     private Set<String> buildHiddenEncounterKeys(Optional<AssignmentDocument> assignmentDoc) {
         if (assignmentDoc.isEmpty()) return Collections.emptySet();
         try {
             List<String> sideKeys = hiddenSideRepository.findByAssignmentName(assignmentDoc.get().getName());
+            if (sideKeys.isEmpty()) return Collections.emptySet();
+
+            // Build "levelId_apiType" → rarity from stats.bosses in the assignment JSON
+            Map<String, String> levelKeyToRarity = new HashMap<>();
+            try {
+                JsonNode root = objectMapper.readTree(assignmentDoc.get().getAssignmentData());
+                JsonNode bossesNode = root.path("stats").path("bosses");
+                if (bossesNode.isArray()) {
+                    for (JsonNode b : bossesNode) {
+                        int    levelId   = b.path("levelId").asInt();
+                        String apiType   = b.path("apiType").asText("");
+                        String levelDesc = b.path("levelDesc").asText("");
+                        if (!apiType.isEmpty()) {
+                            String rarity = levelDesc.startsWith("M") ? "Mythic" : "Legendary";
+                            levelKeyToRarity.put(levelId + "_" + apiType, rarity);
+                        }
+                    }
+                }
+            } catch (Exception ignored) { }
+
             Set<String> result = new HashSet<>();
             for (String key : sideKeys) {
-                int firstUnderscore = key.indexOf('_');
+                // key: "levelId_apiType__miniType"
+                int doubleSep = key.indexOf("__");
+                if (doubleSep < 0) continue;
+                String levelApiPart = key.substring(0, doubleSep);  // "levelId_apiType"
+                String miniPart     = key.substring(doubleSep + 2); // "miniType"
+
+                int firstUnderscore = levelApiPart.indexOf('_');
                 if (firstUnderscore < 0) continue;
-                // Strip leading "levelId_" to get "apiType__miniUnitId"
-                result.add(key.substring(firstUnderscore + 1));
+                String apiType = levelApiPart.substring(firstUnderscore + 1);
+
+                String rarity = levelKeyToRarity.get(levelApiPart);
+                if (rarity == null) continue; // skip if mapping not found — safer than wrong hide
+                result.add(rarity + "|" + apiType + "__" + miniPart);
             }
             return result;
         } catch (Exception ignored) {
