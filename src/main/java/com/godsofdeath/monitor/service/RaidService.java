@@ -341,7 +341,9 @@ public class RaidService {
                         .findFirst().orElse(null);
 
                 if (existing != null) {
-                    // Gruppo reale presente: controlla se mancano mini (0 attacchi nell'API)
+                    // Match fidato (stesso apiType): completa eventuali mini mancanti
+                    // (0 attacchi nell'API) usando la lista mini salvata, che si riferisce
+                    // proprio a questo bossType.
                     if (minisNode != null && minisNode.isArray()) {
                         for (JsonNode m : minisNode) {
                             String miniUnitId = m.path("unitId").asText("");
@@ -356,6 +358,25 @@ public class RaidService {
                     }
                     continue;
                 }
+
+                // Difensivo: l'apiType salvato nell'assignment può essere stale o errato
+                // (es. CODIFICA mal configurata con la descrizione invece del type-string API).
+                // In quel caso bossType.equals(apiType) non matcha mai, ma il nome risolto
+                // (quello mostrato in dashboard) può coincidere con un gruppo già reale:
+                // in tal caso è lo stesso boss e non va duplicato come card vuota. Non fidarsi
+                // però della sua lista mini (riferita allo stesso apiType inattendibile):
+                // potrebbe elencare mini scorrette/obsolete che andrebbero ad aggiungersi
+                // come side fantasma duplicati a quelli reali già presenti.
+                String skeletonName = resolveBossName(apiType, false);
+                boolean matchesExistingByName = typeGroups.values().stream()
+                        .filter(g -> g.rarity.equals(rarity))
+                        .anyMatch(g -> g.unitOrder.stream()
+                                .filter(uid -> "Boss".equals(g.units.get(uid).encounterType))
+                                .findFirst()
+                                .map(uid -> resolveBossName(uid, false))
+                                .map(skeletonName::equals)
+                                .orElse(false));
+                if (matchesExistingByName) continue;
 
                 // Gruppo mancante del tutto: crea skeleton completo
                 TypeGroup skeleton = new TypeGroup(levelDesc, rarity, apiType);
