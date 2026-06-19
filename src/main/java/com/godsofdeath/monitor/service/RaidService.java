@@ -141,7 +141,7 @@ public class RaidService {
         addSkeletonGroupsFromAssignment(assignmentDoc, typeGroups);
 
         // --- Assegnazioni per il player corrente ---
-        Map<String, String> playerAssignments = loadPlayerAssignments(currentUserId, assignmentDoc);
+        Map<String, String> playerAssignments = loadPlayerAssignments(currentUserId, assignmentDoc, typeGroups);
 
         // --- Player corrente ---
         PlayerDocument currentPlayer = enabledPlayers.get(currentUserId);
@@ -250,7 +250,8 @@ public class RaidService {
      * levelDesc starting with "M" → Mythic, otherwise → Legendary.
      * Supports both new-format keys ("levelId_apiType") and old-format ("apiType").
      */
-    private Map<String, String> loadPlayerAssignments(String userId, Optional<AssignmentDocument> doc) {
+    private Map<String, String> loadPlayerAssignments(String userId, Optional<AssignmentDocument> doc,
+                                                        Map<String, TypeGroup> typeGroups) {
         if (doc.isEmpty()) return Collections.emptyMap();
         try {
             JsonNode root = objectMapper.readTree(doc.get().getAssignmentData());
@@ -264,8 +265,14 @@ public class RaidService {
                 }
             }
 
-            // Build rarity|apiType → levelId from stats.bosses (levelDesc "M*" = Mythic, else Legendary)
-            Map<String, Integer> bossRarityToLevelId = new HashMap<>();
+            // Build apiType salvato + rarity → (levelId, bossType reale) from stats.bosses
+            // (levelDesc "M*" = Mythic, else Legendary). Il bossType reale può differire
+            // dall'apiType salvato se questo è stale/errato (vedi resolveRealBossType):
+            // le chiavi rawAssignments usano l'apiType salvato, ma il risultato deve essere
+            // indicizzato sul bossType reale per matchare buildBossGroup.
+            Map<String, Integer> bossRarityToLevelId  = new HashMap<>();
+            Map<String, String>  bossRarityToRealType = new HashMap<>();
+            Map<String, JsonNode> bossRarityToMinis   = new HashMap<>();
             JsonNode statsNode = root.get("stats");
             if (statsNode != null) {
                 JsonNode bossesNode = statsNode.get("bosses");
@@ -275,23 +282,41 @@ public class RaidService {
                         String levelDesc = b.path("levelDesc").asText("");
                         int    levelId   = b.path("levelId").asInt();
                         String rarity    = levelDesc.startsWith("M") ? "Mythic" : "Legendary";
-                        bossRarityToLevelId.put(rarity + "|" + apiType, levelId);
+                        String key       = rarity + "|" + apiType;
+                        bossRarityToLevelId.put(key, levelId);
+                        bossRarityToRealType.put(key, resolveRealBossType(apiType, rarity, typeGroups));
+                        bossRarityToMinis.put(key, b.get("minis"));
                     }
                 }
             }
 
-            // Build result: "rarity|apiType" → value, "rarity|apiType__miniType" → value
+            // Build result: "rarity|realBossType" → value, "rarity|realBossType__miniType" → value
             Map<String, String> result = new HashMap<>();
             for (Map.Entry<String, Integer> entry : bossRarityToLevelId.entrySet()) {
                 String rarityApiType = entry.getKey();
                 int    levelId       = entry.getValue();
                 String apiType       = rarityApiType.substring(rarityApiType.indexOf('|') + 1);
+                String rarity        = rarityApiType.substring(0, rarityApiType.indexOf('|'));
+                String realType      = bossRarityToRealType.getOrDefault(rarityApiType, apiType);
+                String rarityRealType = rarity + "|" + realType;
+                boolean trustedMatch = realType.equals(apiType);
                 String newBossKey    = levelId + "_" + apiType;
                 String oldBossKey    = apiType;
 
                 String bossValue = rawAssignments.containsKey(newBossKey)
                         ? rawAssignments.get(newBossKey) : rawAssignments.get(oldBossKey);
-                if (bossValue != null) result.put(rarityApiType, bossValue);
+                if (bossValue != null) result.put(rarityRealType, bossValue);
+
+                // Quando l'apiType salvato è stale (match solo per nome), anche i miniType
+                // salvati nella lista "minis" di quella entry sono inattendibili (riferiti
+                // allo stesso apiType errato, vedi addSkeletonGroupsFromAssignment). L'unico
+                // modo per recuperare comunque il valore di assegnazione per i side reali è
+                // un match posizionale: l'i-esimo mini configurato corrisponde all'i-esimo
+                // mini reale nell'ordine di comparsa.
+                List<String> configMiniOrder = trustedMatch ? null
+                        : extractConfigMiniOrder(bossRarityToMinis.get(rarityApiType));
+                List<String> realMiniOrder = trustedMatch ? null
+                        : findGroup(realType, rarity, typeGroups).map(this::extractRealMiniOrder).orElse(List.of());
 
                 for (Map.Entry<String, String> ae : rawAssignments.entrySet()) {
                     String k = ae.getKey();
@@ -301,7 +326,16 @@ public class RaidService {
                     } else if (k.startsWith(oldBossKey + "__") && !k.matches("^\\d+_.*")) {
                         miniPart = k.substring(oldBossKey.length() + 2);
                     }
-                    if (miniPart != null) result.put(rarityApiType + "__" + miniPart, ae.getValue());
+                    if (miniPart == null) continue;
+
+                    if (trustedMatch) {
+                        result.put(rarityRealType + "__" + miniPart, ae.getValue());
+                    } else {
+                        int idx = configMiniOrder.indexOf(miniPart);
+                        if (idx >= 0 && idx < realMiniOrder.size()) {
+                            result.put(rarityRealType + "__" + realMiniOrder.get(idx), ae.getValue());
+                        }
+                    }
                 }
             }
 
@@ -335,48 +369,37 @@ public class RaidService {
 
                 JsonNode minisNode = b.get("minis");
 
-                // Cerca un gruppo reale già esistente per questo bossType + rarity
-                TypeGroup existing = typeGroups.values().stream()
-                        .filter(g -> g.bossType.equals(apiType) && g.rarity.equals(rarity))
-                        .findFirst().orElse(null);
+                // bossType realmente usato nei gruppi live per questo apiType+rarity:
+                // coincide con apiType se il match è esatto, altrimenti (apiType stale,
+                // es. CODIFICA mal configurata) viene risolto per nome boss visualizzato.
+                String realBossType = resolveRealBossType(apiType, rarity, typeGroups);
+                boolean trustedMatch = realBossType.equals(apiType);
+
+                TypeGroup existing = findGroup(realBossType, rarity, typeGroups).orElse(null);
 
                 if (existing != null) {
-                    // Match fidato (stesso apiType): completa eventuali mini mancanti
-                    // (0 attacchi nell'API) usando la lista mini salvata, che si riferisce
-                    // proprio a questo bossType.
-                    if (minisNode != null && minisNode.isArray()) {
-                        for (JsonNode m : minisNode) {
-                            String miniUnitId = m.path("unitId").asText("");
-                            if (miniUnitId.isEmpty()) continue;
-                            boolean miniPresent = existing.unitOrder.stream()
-                                    .anyMatch(uid -> extractMiniTypeFromUnitId(uid).equals(miniUnitId));
-                            if (!miniPresent) {
-                                existing.unitOrder.add(miniUnitId);
-                                existing.units.put(miniUnitId, new UnitStats("SideBoss"));
+                    if (trustedMatch) {
+                        // Match fidato (stesso apiType): completa eventuali mini mancanti
+                        // (0 attacchi nell'API) usando la lista mini salvata, che si riferisce
+                        // proprio a questo bossType.
+                        if (minisNode != null && minisNode.isArray()) {
+                            for (JsonNode m : minisNode) {
+                                String miniUnitId = m.path("unitId").asText("");
+                                if (miniUnitId.isEmpty()) continue;
+                                boolean miniPresent = existing.unitOrder.stream()
+                                        .anyMatch(uid -> extractMiniTypeFromUnitId(uid).equals(miniUnitId));
+                                if (!miniPresent) {
+                                    existing.unitOrder.add(miniUnitId);
+                                    existing.units.put(miniUnitId, new UnitStats("SideBoss"));
+                                }
                             }
                         }
                     }
+                    // Match solo per nome (apiType stale): è lo stesso boss ma non ci si
+                    // fida della sua lista mini, che potrebbe essere altrettanto sbagliata
+                    // e aggiungere side fantasma duplicati a quelli reali già presenti.
                     continue;
                 }
-
-                // Difensivo: l'apiType salvato nell'assignment può essere stale o errato
-                // (es. CODIFICA mal configurata con la descrizione invece del type-string API).
-                // In quel caso bossType.equals(apiType) non matcha mai, ma il nome risolto
-                // (quello mostrato in dashboard) può coincidere con un gruppo già reale:
-                // in tal caso è lo stesso boss e non va duplicato come card vuota. Non fidarsi
-                // però della sua lista mini (riferita allo stesso apiType inattendibile):
-                // potrebbe elencare mini scorrette/obsolete che andrebbero ad aggiungersi
-                // come side fantasma duplicati a quelli reali già presenti.
-                String skeletonName = resolveBossName(apiType, false);
-                boolean matchesExistingByName = typeGroups.values().stream()
-                        .filter(g -> g.rarity.equals(rarity))
-                        .anyMatch(g -> g.unitOrder.stream()
-                                .filter(uid -> "Boss".equals(g.units.get(uid).encounterType))
-                                .findFirst()
-                                .map(uid -> resolveBossName(uid, false))
-                                .map(skeletonName::equals)
-                                .orElse(false));
-                if (matchesExistingByName) continue;
 
                 // Gruppo mancante del tutto: crea skeleton completo
                 TypeGroup skeleton = new TypeGroup(levelDesc, rarity, apiType);
@@ -486,6 +509,56 @@ public class RaidService {
             if (exact.isPresent()) return exact.get();
         }
         return bossLookupRepository.findNameByUnitIdContains(unitId).orElse(unitId);
+    }
+
+    /**
+     * Risolve il bossType realmente usato nei {@code typeGroups} live per un apiType+rarity
+     * salvato in un assignment. Se l'apiType salvato non matcha nessun gruppo esistente
+     * (es. CODIFICA mal configurata con la descrizione invece del type-string API), prova
+     * a risolvere il match tramite il nome boss visualizzato, che è quello affidabile.
+     * Restituisce l'apiType originale se non trova nessun match (boss non ancora combattuto).
+     */
+    private String resolveRealBossType(String apiType, String rarity, Map<String, TypeGroup> typeGroups) {
+        if (findGroup(apiType, rarity, typeGroups).isPresent()) return apiType;
+
+        String targetName = resolveBossName(apiType, false);
+        return typeGroups.values().stream()
+                .filter(g -> g.rarity.equals(rarity))
+                .filter(g -> g.unitOrder.stream()
+                        .filter(uid -> "Boss".equals(g.units.get(uid).encounterType))
+                        .findFirst()
+                        .map(uid -> resolveBossName(uid, false))
+                        .map(targetName::equals)
+                        .orElse(false))
+                .map(g -> g.bossType)
+                .findFirst()
+                .orElse(apiType);
+    }
+
+    private Optional<TypeGroup> findGroup(String bossType, String rarity, Map<String, TypeGroup> typeGroups) {
+        return typeGroups.values().stream()
+                .filter(g -> g.bossType.equals(bossType) && g.rarity.equals(rarity))
+                .findFirst();
+    }
+
+    /** Ordine (di comparsa) dei miniType configurati in una entry "minis" salvata in assignment. */
+    private List<String> extractConfigMiniOrder(JsonNode minisNode) {
+        List<String> order = new ArrayList<>();
+        if (minisNode != null && minisNode.isArray()) {
+            for (JsonNode m : minisNode) {
+                String u = m.path("unitId").asText("");
+                if (!u.isEmpty()) order.add(u);
+            }
+        }
+        return order;
+    }
+
+    /** Ordine (di comparsa) dei miniType reali di un gruppo, dai dati live/skeleton. */
+    private List<String> extractRealMiniOrder(TypeGroup group) {
+        return group.unitOrder.stream()
+                .filter(uid -> "SideBoss".equals(group.units.get(uid).encounterType))
+                .map(this::extractMiniTypeFromUnitId)
+                .collect(Collectors.toList());
     }
 
     @SuppressWarnings("unchecked")
