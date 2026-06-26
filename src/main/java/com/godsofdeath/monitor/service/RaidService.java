@@ -146,19 +146,21 @@ public class RaidService {
         // --- Player corrente ---
         PlayerDocument currentPlayer = enabledPlayers.get(currentUserId);
         String playerName = currentPlayer != null ? currentPlayer.getUserGameName() : currentUserId;
+        String playerType = currentPlayer != null ? currentPlayer.getPlayerType() : null;
 
         // --- Costruzione bossGroups ---
         // I gruppi scheletro (fromAssignment=true) passano sempre il filtro anche senza dati reali
         List<BossGroupDTO> bossGroups = typeGroups.entrySet().stream()
                 .filter(e -> e.getValue().fromAssignment
                           || e.getValue().units.values().stream().anyMatch(u -> u.guildAttackCount > 0))
-                .map(e -> buildBossGroup(e.getKey(), e.getValue(), currentUserId, playerAssignments, hiddenEncounterKeys))
+                .map(e -> buildBossGroup(e.getKey(), e.getValue(), currentUserId, playerAssignments, hiddenEncounterKeys, playerType))
                 .filter(bg -> !bg.getEncounters().isEmpty())
                 .collect(Collectors.toList());
 
         CurrentSeasonDataDTO data = CurrentSeasonDataDTO.builder()
                 .season(season)
                 .playerName(playerName)
+                .playerType(playerType)
                 .totalTokensUsed(playerTokens.getOrDefault(currentUserId, 0))
                 .totalBombsUsed(playerBombs.getOrDefault(currentUserId, 0))
                 .bossGroups(bossGroups)
@@ -173,7 +175,7 @@ public class RaidService {
 
     private BossGroupDTO buildBossGroup(String groupKey, TypeGroup group, String currentUserId,
                                         Map<String, String> playerAssignments,
-                                        Set<String> hiddenEncounterKeys) {
+                                        Set<String> hiddenEncounterKeys, String playerType) {
         // group.bossType = tipo boss dall'API (es. "RogalDorn"), usato per la chiave assignment
         String bossApiType = group.bossType;
 
@@ -222,7 +224,7 @@ public class RaidService {
 
             String miniType = isSide ? extractMiniTypeFromUnitId(unitId) : null;
             String lookupKey = group.rarity + "|" + bossApiType + (miniType != null ? "__" + miniType : "");
-            String assignmentType = playerAssignments.get(lookupKey);
+            String assignmentType = applyPlayerTypeFilter(playerAssignments.get(lookupKey), playerType);
 
             encounters.add(EncounterDTO.builder()
                     .unitId(unitId)
@@ -242,6 +244,22 @@ public class RaidService {
                 .bossName(bossName)
                 .encounters(encounters)
                 .build();
+    }
+
+    /**
+     * Applica il filtro badge in base al PLAYER_TYPE del giocatore:
+     * - "V": solo "consigliato" passa, rinominato in "prioritario"; affrontabile/sconsigliato spariscono.
+     * - "R": solo "consigliato" passa, invariato; affrontabile/sconsigliato spariscono.
+     * - altro/null: nessun filtro, comportamento attuale.
+     */
+    private String applyPlayerTypeFilter(String assignmentType, String playerType) {
+        if ("V".equals(playerType)) {
+            return "consigliato".equals(assignmentType) ? "prioritario" : null;
+        }
+        if ("R".equals(playerType)) {
+            return "consigliato".equals(assignmentType) ? "consigliato" : null;
+        }
+        return assignmentType;
     }
 
     /**

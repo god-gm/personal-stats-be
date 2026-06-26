@@ -11,6 +11,8 @@ public class CurrentSeasonDataDTO {
 
     private int season;
     private String playerName;
+    /** "V" | "R" | null/altro — guida il filtro badge in dashboard */
+    private String playerType;
     private int totalTokensUsed;
     private int totalBombsUsed;
     private List<BossGroupDTO> bossGroups;
@@ -34,7 +36,7 @@ public class CurrentSeasonDataDTO {
         private double playerBest;
         private int playerAttackCount;
         private String performanceIndicator;
-        /** "consigliato" | "affrontabile" | "sconsigliato" | null (no saved assignment) */
+        /** "consigliato" | "affrontabile" | "sconsigliato" | "prioritario" | null (no saved assignment) */
         private String assignmentType;
     }
 }

@@ -14,6 +14,7 @@ public class PlayerDocument {
     private String apiKey;
     private String discordName;
     private String enabled;
+    private String playerType;
 
     @DynamoDbPartitionKey
     @DynamoDbAttribute("USER_ID")
@@ -30,4 +31,7 @@ public class PlayerDocument {
 
     @DynamoDbAttribute("ENABLED")
     public String getEnabled() { return enabled; }
+
+    @DynamoDbAttribute("PLAYER_TYPE")
+    public String getPlayerType() { return playerType; }
 }
