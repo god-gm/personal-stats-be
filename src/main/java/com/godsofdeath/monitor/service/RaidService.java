@@ -169,6 +169,42 @@ public class RaidService {
         return GenericResponseDTO.ok("Stagione corrente recuperata", data);
     }
 
+    /**
+     * Miglior danno singolo per unitId nella season corrente, su tutta la gilda.
+     * Stesse regole di filtro/killing-blow di getCurrentSeason, ma senza raggruppamento
+     * per boss/label: è un metodo indipendente, dedicato al dato "Guild Best" delle card.
+     */
+    public GenericResponseDTO<Map<String, Double>> getGuildBestRuns() {
+        String guildApiKey = sysConfigRepository.getValue("API-KEY")
+                .orElseThrow(() -> new IllegalStateException("API-KEY gilda non configurata"));
+
+        Map<String, Object> apiData = callTacticusApi(guildApiKey);
+        List<Map<String, Object>> entries = (List<Map<String, Object>>) apiData.getOrDefault("entries", List.of());
+
+        Map<String, Double> best = new HashMap<>();
+        for (Map<String, Object> entry : entries) {
+            String rarity        = str(entry, "rarity");
+            String damageType    = str(entry, "damageType");
+            String unitId        = str(entry, "unitId");
+            String encounterType = str(entry, "encounterType");
+            long   damageDealt   = toLong(entry, "damageDealt");
+            long   remainingHp   = toLong(entry, "remainingHp");
+            long   maxHp         = toLong(entry, "maxHp");
+
+            if (!"Legendary".equals(rarity) && !"Mythic".equals(rarity)) continue;
+            if (!"Battle".equals(damageType)) continue;
+
+            boolean isKillingBlow = "Boss".equals(encounterType)
+                    ? remainingHp == 0
+                    : "SideBoss".equals(encounterType) && remainingHp == 0 && damageDealt != maxHp;
+            if (isKillingBlow) continue;
+
+            best.merge(unitId, (double) damageDealt, Math::max);
+        }
+
+        return GenericResponseDTO.ok("Guild best recuperati", best);
+    }
+
     // ----------------------------------------------------------------
     // Helpers
     // ----------------------------------------------------------------

@@ -11,6 +11,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
 @RestController
 @RequestMapping("/api/raid")
 @RequiredArgsConstructor
@@ -26,5 +28,11 @@ public class RaidController {
             @AuthenticationPrincipal String currentUserId) {
 
         return ResponseEntity.ok(raidService.getCurrentSeason(currentUserId));
+    }
+
+    @GetMapping("/current-season/guild-best")
+    @Operation(summary = "Miglior danno singolo per unitId nella season corrente, su tutta la gilda")
+    public ResponseEntity<GenericResponseDTO<Map<String, Double>>> getGuildBest() {
+        return ResponseEntity.ok(raidService.getGuildBestRuns());
     }
 }
