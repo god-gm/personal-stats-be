@@ -2,6 +2,7 @@ package com.godsofdeath.monitor.controller;
 
 import com.godsofdeath.monitor.dto.output.GenericResponseDTO;
 import com.godsofdeath.monitor.dto.output.PlayerInfoDTO;
+import com.godsofdeath.monitor.dto.output.PlayerSummaryDTO;
 import com.godsofdeath.monitor.service.PlayerService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -11,6 +12,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/api/player")
 @RequiredArgsConstructor
@@ -19,6 +22,12 @@ import org.springframework.web.bind.annotation.*;
 public class PlayerController {
 
     private final PlayerService playerService;
+
+    @GetMapping("/list")
+    @Operation(summary = "Lista tutti i player abilitati (ENABLED=Y)")
+    public ResponseEntity<GenericResponseDTO<List<PlayerSummaryDTO>>> getEnabledPlayers() {
+        return ResponseEntity.ok(playerService.getEnabledPlayerList());
+    }
 
     @GetMapping("/info")
     @Operation(summary = "Info operativo: nome API, token raid e bomba")

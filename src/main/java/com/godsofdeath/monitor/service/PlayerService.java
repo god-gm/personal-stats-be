@@ -2,6 +2,7 @@ package com.godsofdeath.monitor.service;
 
 import com.godsofdeath.monitor.dto.output.GenericResponseDTO;
 import com.godsofdeath.monitor.dto.output.PlayerInfoDTO;
+import com.godsofdeath.monitor.dto.output.PlayerSummaryDTO;
 import com.godsofdeath.monitor.repository.PlayerRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -14,7 +15,10 @@ import org.springframework.web.client.RestTemplate;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -29,6 +33,19 @@ public class PlayerService {
 
     @Value("${tacticus.api.base-url}")
     private String tacticusBaseUrl;
+
+    public GenericResponseDTO<List<PlayerSummaryDTO>> getEnabledPlayerList() {
+        List<PlayerSummaryDTO> players = playerRepository.findAllEnabled()
+                .stream()
+                .map(p -> PlayerSummaryDTO.builder()
+                        .userId(p.getUserId())
+                        .userGameName(p.getUserGameName())
+                        .build())
+                .sorted(Comparator.comparing(PlayerSummaryDTO::getUserGameName,
+                        Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
+                .collect(Collectors.toList());
+        return GenericResponseDTO.ok("Player list", players);
+    }
 
     public GenericResponseDTO<PlayerInfoDTO> getPlayerInfo(String userId) {
         String apiKey = playerRepository.findById(userId)
