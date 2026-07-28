@@ -25,7 +25,7 @@ public class ExternalController {
     private final ExternalAssignmentService externalAssignmentService;
 
     @GetMapping("/boss-assignment")
-    @Operation(summary = "Elenco discord_name assegnati (consigliato) a un boss/mini per la season corrente")
+    @Operation(summary = "Elenco userId dei player assegnati (consigliato) a un boss/mini per la season corrente")
     public ResponseEntity<GenericResponseDTO<List<String>>> getBossAssignment(
             @RequestHeader(value = "X-External-Api-Key", required = false) String apiKey,
             @Parameter(description = "Identificativo boss/mini, es. GuildBoss6Boss1TyranScreamerKiller")
@@ -36,7 +36,7 @@ public class ExternalController {
                     .body(GenericResponseDTO.denied("API key non valida"));
         }
 
-        GenericResponseDTO<List<String>> response = externalAssignmentService.getAssignedDiscordNames(bossIdentifier);
+        GenericResponseDTO<List<String>> response = externalAssignmentService.getAssignedPlayerIds(bossIdentifier);
         int status = "OK".equals(response.getStatus()) ? 200 : 400;
         return ResponseEntity.status(status).body(response);
     }

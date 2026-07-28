@@ -3,6 +3,7 @@ package com.godsofdeath.monitor.service;
 import com.godsofdeath.monitor.document.PlayerDocument;
 import com.godsofdeath.monitor.dto.output.GenericResponseDTO;
 import com.godsofdeath.monitor.dto.output.GuildStatEntryDTO;
+import com.godsofdeath.monitor.dto.output.TargetAttackStatDTO;
 import com.godsofdeath.monitor.dto.output.TokenUsageEntryDTO;
 import com.godsofdeath.monitor.repository.PlayerRepository;
 import com.godsofdeath.monitor.repository.SysConfigRepository;
@@ -106,6 +107,72 @@ public class AdminStatsService {
                 .collect(Collectors.toList());
 
         return GenericResponseDTO.ok("Guild stats recuperate", result);
+    }
+
+    /**
+     * Player che hanno attaccato un target specifico (unitId + rarity) nella season corrente,
+     * con conteggio attacchi e media danno. La rarity è necessaria perché lo stesso unitId può
+     * comparire nella season sia a livello Legendary che Mythic (boss/mini fought at multiple
+     * tiers) — senza il filtro rarity le due occorrenze verrebbero sommate insieme.
+     */
+    public GenericResponseDTO<List<TargetAttackStatDTO>> getTargetAttackStats(String unitId, String rarity) {
+        if (unitId == null || unitId.isBlank()) {
+            return GenericResponseDTO.ko("unitId mancante");
+        }
+        if (!"Legendary".equals(rarity) && !"Mythic".equals(rarity)) {
+            return GenericResponseDTO.ko("rarity non valida (atteso Legendary o Mythic)");
+        }
+
+        List<Map<String, Object>> entries = fetchCurrentSeasonEntries();
+        Map<String, PlayerDocument> enabledPlayers = playerRepository.findAllEnabled()
+                .stream()
+                .collect(Collectors.toMap(PlayerDocument::getUserId, p -> p));
+
+        Map<String, Long>    damageSumByPlayer  = new HashMap<>();
+        Map<String, Integer> validCountByPlayer = new HashMap<>();
+        Map<String, Integer> attackCountByPlayer = new HashMap<>();
+
+        for (Map<String, Object> entry : entries) {
+            if (!unitId.equals(str(entry, "unitId"))) continue;
+            if (!rarity.equals(str(entry, "rarity"))) continue;
+            if (!"Battle".equals(str(entry, "damageType"))) continue;
+
+            String userId = str(entry, "userId");
+            if (!enabledPlayers.containsKey(userId)) continue;
+
+            String encounterType = str(entry, "encounterType");
+            long   damageDealt   = toLong(entry, "damageDealt");
+            long   remainingHp   = toLong(entry, "remainingHp");
+            long   maxHp         = toLong(entry, "maxHp");
+
+            attackCountByPlayer.merge(userId, 1, Integer::sum);
+
+            boolean isKillingBlow = "Boss".equals(encounterType)
+                    ? remainingHp == 0
+                    : "SideBoss".equals(encounterType) && remainingHp == 0 && damageDealt != maxHp;
+            if (!isKillingBlow) {
+                damageSumByPlayer.merge(userId, damageDealt, Long::sum);
+                validCountByPlayer.merge(userId, 1, Integer::sum);
+            }
+        }
+
+        List<TargetAttackStatDTO> result = attackCountByPlayer.entrySet().stream()
+                .map(e -> {
+                    String userId     = e.getKey();
+                    int    validCount = validCountByPlayer.getOrDefault(userId, 0);
+                    long   damageSum  = damageSumByPlayer.getOrDefault(userId, 0L);
+                    double average    = validCount > 0 ? (double) damageSum / validCount : 0;
+                    return TargetAttackStatDTO.builder()
+                            .userId(userId)
+                            .playerName(enabledPlayers.get(userId).getUserGameName())
+                            .attackCount(e.getValue())
+                            .average(Math.round(average * 100.0) / 100.0)
+                            .build();
+                })
+                .sorted(Comparator.comparingDouble(TargetAttackStatDTO::getAverage).reversed())
+                .collect(Collectors.toList());
+
+        return GenericResponseDTO.ok("Statistiche attacchi recuperate", result);
     }
 
     @SuppressWarnings("unchecked")
