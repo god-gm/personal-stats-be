@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Gods of Death — Guild Raid Monitor REST API
+Description: HECATOMB — Guild Raid Monitor REST API
 
 Parameters:
   JwtSecret:
@@ -38,7 +38,7 @@ Resources:
     Properties:
       Handler: com.godsofdeath.monitor.StreamLambdaHandler::handleRequest
       CodeUri: target/monitor-1.0.0-SNAPSHOT.jar
-      Description: Gods of Death Raid Monitor REST API
+      Description: HECATOMB Raid Monitor REST API
       Environment:
         Variables:
           JWT_SECRET: !Ref JwtSecret
