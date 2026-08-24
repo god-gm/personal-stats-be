@@ -23,7 +23,7 @@ import java.util.List;
 @SecurityRequirement(name = "bearerAuth")
 public class AdminStatsController {
 
-    private final AdminStatsService adminStatsService;
+    private final AdminStatsService         adminStatsService;
     private final ExternalAssignmentService externalAssignmentService;
 
     @GetMapping("/token-usage")
