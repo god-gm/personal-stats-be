@@ -153,6 +153,7 @@ public class RaidService {
         List<BossGroupDTO> bossGroups = typeGroups.entrySet().stream()
                 .filter(e -> e.getValue().fromAssignment
                           || e.getValue().units.values().stream().anyMatch(u -> u.guildAttackCount > 0))
+                .filter(e -> !hiddenEncounterKeys.contains(e.getValue().rarity + "|" + e.getValue().bossType))
                 .map(e -> buildBossGroup(e.getKey(), e.getValue(), currentUserId, playerAssignments, hiddenEncounterKeys, playerType))
                 .filter(bg -> !bg.getEncounters().isEmpty())
                 .collect(Collectors.toList());
@@ -510,19 +511,29 @@ public class RaidService {
 
             Set<String> result = new HashSet<>();
             for (String key : sideKeys) {
-                // key: "levelId_apiType__miniType"
                 int doubleSep = key.indexOf("__");
-                if (doubleSep < 0) continue;
-                String levelApiPart = key.substring(0, doubleSep);  // "levelId_apiType"
-                String miniPart     = key.substring(doubleSep + 2); // "miniType"
+                if (doubleSep >= 0) {
+                    // Mini key: "levelId_apiType__miniType"
+                    String levelApiPart = key.substring(0, doubleSep);
+                    String miniPart     = key.substring(doubleSep + 2);
 
-                int firstUnderscore = levelApiPart.indexOf('_');
-                if (firstUnderscore < 0) continue;
-                String apiType = levelApiPart.substring(firstUnderscore + 1);
+                    int firstUnderscore = levelApiPart.indexOf('_');
+                    if (firstUnderscore < 0) continue;
+                    String apiType = levelApiPart.substring(firstUnderscore + 1);
 
-                String rarity = levelKeyToRarity.get(levelApiPart);
-                if (rarity == null) continue; // skip if mapping not found — safer than wrong hide
-                result.add(rarity + "|" + apiType + "__" + miniPart);
+                    String rarity = levelKeyToRarity.get(levelApiPart);
+                    if (rarity == null) continue;
+                    result.add(rarity + "|" + apiType + "__" + miniPart);
+                } else {
+                    // Boss key: "levelId_apiType"
+                    int firstUnderscore = key.indexOf('_');
+                    if (firstUnderscore < 0) continue;
+                    String apiType = key.substring(firstUnderscore + 1);
+
+                    String rarity = levelKeyToRarity.get(key);
+                    if (rarity == null) continue;
+                    result.add(rarity + "|" + apiType);
+                }
             }
             return result;
         } catch (Exception ignored) {

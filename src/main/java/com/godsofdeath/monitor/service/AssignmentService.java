@@ -117,6 +117,9 @@ public class AssignmentService {
             if (bossStats == null) {
                 noStats = true;
                 bossStats = buildEmptyBossStats(bossDoc.get());
+            } else {
+                // Inject DB-defined minis that are missing from API data (partial or zero encounters)
+                injectDbMinis(bossStats, bossDoc.get());
             }
 
             // Build player stats for the boss
@@ -533,18 +536,35 @@ public class AssignmentService {
                 .collect(Collectors.toList());
     }
 
-    private BossStats buildEmptyBossStats(AnagBossDocument bossDoc) {
-        BossStats bs = new BossStats();
-        bs.guildBossAvg = 0;
+    private void injectDbMinis(BossStats bs, AnagBossDocument bossDoc) {
         String miniDx = bossDoc.getMiniDx();
         String miniSx = bossDoc.getMiniSx();
-        if (miniDx != null && !miniDx.isBlank()) {
+        if (miniDx != null && !miniDx.isBlank() && !bs.miniUnitsOrdered.containsKey(miniDx)) {
             UnitStats us = new UnitStats();
             us.displayUnitId = miniDx;
             us.encounterIndex = 0;
             bs.miniUnitsOrdered.put(miniDx, us);
         }
-        if (miniSx != null && !miniSx.isBlank()) {
+        if (miniSx != null && !miniSx.isBlank() && !bs.miniUnitsOrdered.containsKey(miniSx)) {
+            UnitStats us = new UnitStats();
+            us.displayUnitId = miniSx;
+            us.encounterIndex = 1;
+            bs.miniUnitsOrdered.put(miniSx, us);
+        }
+    }
+
+    private BossStats buildEmptyBossStats(AnagBossDocument bossDoc) {
+        BossStats bs = new BossStats();
+        bs.guildBossAvg = 0;
+        String miniDx = bossDoc.getMiniDx();
+        String miniSx = bossDoc.getMiniSx();
+        if (miniDx != null && !miniDx.isBlank() && !bs.miniUnitsOrdered.containsKey(miniDx)) {
+            UnitStats us = new UnitStats();
+            us.displayUnitId = miniDx;
+            us.encounterIndex = 0;
+            bs.miniUnitsOrdered.put(miniDx, us);
+        }
+        if (miniSx != null && !miniSx.isBlank() && !bs.miniUnitsOrdered.containsKey(miniSx)) {
             UnitStats us = new UnitStats();
             us.displayUnitId = miniSx;
             us.encounterIndex = 1;
