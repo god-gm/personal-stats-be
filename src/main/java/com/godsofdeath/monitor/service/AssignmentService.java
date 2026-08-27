@@ -57,7 +57,7 @@ public class AssignmentService {
         int currentSeason = ((Number) currentData.getOrDefault("season", 0)).intValue();
         List<SeasonData> allSeasons = new ArrayList<>();
         allSeasons.add(new SeasonData(currentSeason, currentData));
-        for (int i = 1; i <= 4; i++) {
+        for (int i = 1; i <= 10; i++) {
             try {
                 Map<String, Object> prev = callApi(guildApiKey, currentSeason - i);
                 allSeasons.add(new SeasonData(currentSeason - i, prev));
@@ -112,8 +112,9 @@ public class AssignmentService {
             }
             if (apiType == null) continue;
 
+            String rarity = levelDesc.startsWith("M") ? "Mythic" : "Legendary";
             boolean noStats = false;
-            BossStats bossStats = statsMap.get(apiType);
+            BossStats bossStats = statsMap.get(rarity + "|" + apiType);
             if (bossStats == null) {
                 noStats = true;
                 bossStats = buildEmptyBossStats(bossDoc.get());
@@ -297,7 +298,7 @@ public class AssignmentService {
                         bestRarityByType.put(apiType, new BestRarityEntry(rarityOrd, globalPos, apiType));
                     }
 
-                    BossStats bs = result.computeIfAbsent(apiType, k -> new BossStats());
+                    BossStats bs = result.computeIfAbsent(rarity + "|" + apiType, k -> new BossStats());
                     bs.bossUnit.playerStats.computeIfAbsent(userId, k -> new PlayerUnitStats());
                     bs.bossUnit.playerStats.get(userId).attackCount++;
 
@@ -312,8 +313,9 @@ public class AssignmentService {
                     // For SideBoss entries the `type` field IS the parent boss type — use it directly.
                     String parentType = apiType;
 
-                    // Mini key: parentType → tracked separately per unitId
-                    BossStats bs = result.computeIfAbsent(parentType, k -> new BossStats());
+                    // Mini key: parentType → tracked separately per unitId; keyed with rarity
+                    // to keep Legendary and Mythic stats separate when the same boss appears at both tiers.
+                    BossStats bs = result.computeIfAbsent(rarity + "|" + parentType, k -> new BossStats());
 
                     // Build the canonical mini unit ID from the raw unitId
                     String miniKey = extractMiniTypeFromUnitId(unitId);

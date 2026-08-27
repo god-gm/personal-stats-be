@@ -29,14 +29,16 @@ public class ExternalController {
     public ResponseEntity<GenericResponseDTO<List<String>>> getBossAssignment(
             @RequestHeader(value = "X-External-Api-Key", required = false) String apiKey,
             @Parameter(description = "Identificativo boss/mini, es. GuildBoss6Boss1TyranScreamerKiller")
-            @RequestParam String bossIdentifier) {
+            @RequestParam String bossIdentifier,
+            @Parameter(description = "Livello stagionale opzionale (es. L5) per disambiguare boss configurati più volte con la stessa rarity")
+            @RequestParam(required = false) String levelDesc) {
 
         if (!externalAssignmentService.isValidApiKey(apiKey)) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(GenericResponseDTO.denied("API key non valida"));
         }
 
-        GenericResponseDTO<List<String>> response = externalAssignmentService.getAssignedPlayerIds(bossIdentifier);
+        GenericResponseDTO<List<String>> response = externalAssignmentService.getAssignedPlayerIds(bossIdentifier, levelDesc);
         int status = "OK".equals(response.getStatus()) ? 200 : 400;
         return ResponseEntity.status(status).body(response);
     }

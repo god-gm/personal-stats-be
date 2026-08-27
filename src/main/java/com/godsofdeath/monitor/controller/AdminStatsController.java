@@ -42,8 +42,9 @@ public class AdminStatsController {
     @Operation(summary = "Player con assegnazione Consigliato su un target (unitId + rarity) per l'assignment corrente")
     public ResponseEntity<GenericResponseDTO<List<TargetAssigneeDTO>>> getTargetConsigliato(
             @RequestParam String unitId,
-            @RequestParam String rarity) {
-        return ResponseEntity.ok(externalAssignmentService.getConsigliatoPlayers(unitId, rarity));
+            @RequestParam String rarity,
+            @RequestParam(required = false) String levelDesc) {
+        return ResponseEntity.ok(externalAssignmentService.getConsigliatoPlayers(unitId, rarity, levelDesc));
     }
 
     @GetMapping("/target-attacks")

@@ -158,6 +158,8 @@ public class RaidService {
                 .filter(bg -> !bg.getEncounters().isEmpty())
                 .collect(Collectors.toList());
 
+        bossGroups.sort(Comparator.comparingInt(bg -> labelToOrder(bg.getLabel())));
+
         CurrentSeasonDataDTO data = CurrentSeasonDataDTO.builder()
                 .season(season)
                 .playerName(playerName)
@@ -200,7 +202,7 @@ public class RaidService {
                     : "SideBoss".equals(encounterType) && remainingHp == 0 && damageDealt != maxHp;
             if (isKillingBlow) continue;
 
-            best.merge(unitId, (double) damageDealt, Math::max);
+            best.merge(unitId + "|" + rarity, (double) damageDealt, Math::max);
         }
 
         return GenericResponseDTO.ok("Guild best recuperati", best);
@@ -433,6 +435,12 @@ public class RaidService {
                 TypeGroup existing = findGroup(realBossType, rarity, typeGroups).orElse(null);
 
                 if (existing != null) {
+                    // Aggiorna sempre il label con quello dell'assignment configurato: quando lo
+                    // stesso boss compare a più livelli (es. L3 e L5), l'ultimo vince.
+                    // Si aggiorna sia per match fidati (stesso apiType) sia per match per nome
+                    // (apiType stale/diversa variante stagionale): il label viene dall'assignment,
+                    // non dal contatore live, quindi è sempre corretto.
+                    existing.label = levelDesc;
                     if (trustedMatch) {
                         // Match fidato (stesso apiType): completa eventuali mini mancanti
                         // (0 attacchi nell'API) usando la lista mini salvata, che si riferisce
@@ -641,6 +649,13 @@ public class RaidService {
             throw new IllegalStateException("Chiamata API Tacticus fallita");
         }
         return response.getBody();
+    }
+
+    private static int labelToOrder(String label) {
+        if (label == null || label.isEmpty()) return 999;
+        char prefix = label.charAt(0);
+        int base = (prefix == 'M') ? 1000 : 0;
+        try { return base + Integer.parseInt(label.substring(1)); } catch (NumberFormatException e) { return 999; }
     }
 
     private static String str(Map<String, Object> m, String k) {

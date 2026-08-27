@@ -53,6 +53,10 @@ public class ExternalAssignmentService {
     private String tacticusBaseUrl;
 
     public GenericResponseDTO<List<String>> getAssignedPlayerIds(String bossIdentifier) {
+        return getAssignedPlayerIds(bossIdentifier, null);
+    }
+
+    public GenericResponseDTO<List<String>> getAssignedPlayerIds(String bossIdentifier, String levelDesc) {
         if (bossIdentifier == null || bossIdentifier.isBlank()) {
             return GenericResponseDTO.ko("bossIdentifier mancante");
         }
@@ -74,7 +78,7 @@ public class ExternalAssignmentService {
                 return GenericResponseDTO.ko("Boss non riconosciuto in anagrafica");
             }
 
-            String targetKey = resolveTargetKey(resolvedName, bossesNode);
+            String targetKey = resolveTargetKey(resolvedName, bossesNode, null, levelDesc);
             if (targetKey == null) {
                 return GenericResponseDTO.ko("Boss non riconosciuto in anagrafica");
             }
@@ -92,7 +96,7 @@ public class ExternalAssignmentService {
      * due volte nella season (Legendary e Mythic). Restituisce i nomi (per la UI), non i
      * soli userId.
      */
-    public GenericResponseDTO<List<TargetAssigneeDTO>> getConsigliatoPlayers(String unitId, String rarity) {
+    public GenericResponseDTO<List<TargetAssigneeDTO>> getConsigliatoPlayers(String unitId, String rarity, String levelDesc) {
         if (unitId == null || unitId.isBlank()) {
             return GenericResponseDTO.ko("unitId mancante");
         }
@@ -117,7 +121,7 @@ public class ExternalAssignmentService {
                 return GenericResponseDTO.ok("Nessuna assegnazione trovata per questo target", List.of());
             }
 
-            String targetKey = resolveTargetKey(resolvedName, bossesNode, rarity);
+            String targetKey = resolveTargetKey(resolvedName, bossesNode, rarity, levelDesc);
             if (targetKey == null) {
                 return GenericResponseDTO.ok("Nessuna assegnazione trovata per questo target", List.of());
             }
@@ -130,38 +134,48 @@ public class ExternalAssignmentService {
     }
 
     private String resolveTargetKey(String resolvedName, JsonNode bossesNode) {
-        return resolveTargetKey(resolvedName, bossesNode, null);
+        return resolveTargetKey(resolvedName, bossesNode, null, null);
+    }
+
+    private String resolveTargetKey(String resolvedName, JsonNode bossesNode, String rarityFilter) {
+        return resolveTargetKey(resolvedName, bossesNode, rarityFilter, null);
     }
 
     /**
-     * Confronto "LIKE" bidirezionale (stesso pattern di AssignmentService.buildUnitNameToTypeMap)
-     * tra il nome risolto e bossDesc/mini.name già salvati nell'assignment; vince il match più
-     * lungo, per evitare ambiguità tra nomi che si contengono a vicenda. Quando rarityFilter è
-     * valorizzata, scarta a monte i boss configurati all'altra rarity (levelDesc che inizia per
-     * "M" → Mythic, altrimenti Legendary) — necessario perché lo stesso boss può comparire due
-     * volte nella season (una volta Legendary, una Mythic) con lo stesso bossDesc.
+     * Confronto "LIKE" bidirezionale tra il nome risolto e bossDesc/mini.name già salvati
+     * nell'assignment; vince il match più lungo. rarityFilter scarta i boss dell'altra rarity.
+     * levelDescFilter (opzionale) restringe ulteriormente al solo livello esatto (es. "L5"):
+     * necessario quando lo stesso boss compare a più livelli con la stessa rarity (es. L3 e L5
+     * entrambi Legendary HiveTyrant).
      */
-    private String resolveTargetKey(String resolvedName, JsonNode bossesNode, String rarityFilter) {
-        String needle = resolvedName.toLowerCase();
-        String bestKey = null;
-        int    bestLength = -1;
+    private String resolveTargetKey(String resolvedName, JsonNode bossesNode, String rarityFilter, String levelDescFilter) {
+        String needle        = resolvedName.toLowerCase();
+        String bestKey       = null;
+        int    bestLength    = -1;
+        int    bestRarityRank = -1;
+        int    bestLevelId   = -1;
 
         for (JsonNode b : bossesNode) {
+            String levelDesc = b.path("levelDesc").asText("");
             if (rarityFilter != null) {
-                String levelDesc  = b.path("levelDesc").asText("");
                 String bossRarity = levelDesc.startsWith("M") ? "Mythic" : "Legendary";
                 if (!rarityFilter.equals(bossRarity)) continue;
             }
+            if (levelDescFilter != null && !levelDescFilter.isEmpty() && !levelDescFilter.equals(levelDesc)) continue;
 
-            int    levelId  = b.path("levelId").asInt();
-            String apiType  = b.path("apiType").asText("");
-            String bossDesc = b.path("bossDesc").asText("");
+            int    levelId    = b.path("levelId").asInt();
+            int    rarityRank = levelDesc.startsWith("M") ? 1 : 0;
+            String apiType    = b.path("apiType").asText("");
+            String bossDesc   = b.path("bossDesc").asText("");
 
             if (!bossDesc.isBlank()) {
                 String hay = bossDesc.toLowerCase();
-                if ((hay.contains(needle) || needle.contains(hay)) && hay.length() > bestLength) {
-                    bestKey    = levelId + "_" + apiType;
-                    bestLength = hay.length();
+                if ((hay.contains(needle) || needle.contains(hay))
+                        && isBetter(hay.length(), rarityRank, levelId, bestLength, bestRarityRank, bestLevelId)) {
+                    bestKey       = levelId + "_" + apiType;
+                    bestLength    = hay.length();
+                    bestRarityRank = rarityRank;
+                    bestLevelId   = levelId;
                 }
             }
 
@@ -173,14 +187,24 @@ public class ExternalAssignmentService {
                     if (miniName.isBlank() || miniUnitId.isBlank()) continue;
 
                     String hay = miniName.toLowerCase();
-                    if ((hay.contains(needle) || needle.contains(hay)) && hay.length() > bestLength) {
-                        bestKey    = levelId + "_" + apiType + "__" + miniUnitId;
-                        bestLength = hay.length();
+                    if ((hay.contains(needle) || needle.contains(hay))
+                            && isBetter(hay.length(), rarityRank, levelId, bestLength, bestRarityRank, bestLevelId)) {
+                        bestKey       = levelId + "_" + apiType + "__" + miniUnitId;
+                        bestLength    = hay.length();
+                        bestRarityRank = rarityRank;
+                        bestLevelId   = levelId;
                     }
                 }
             }
         }
         return bestKey;
+    }
+
+    private static boolean isBetter(int nameLen, int rarityRank, int levelId,
+                                     int bestLen, int bestRarityRank, int bestLevelId) {
+        if (nameLen != bestLen) return nameLen > bestLen;
+        if (rarityRank != bestRarityRank) return rarityRank > bestRarityRank;
+        return levelId > bestLevelId;
     }
 
     private List<TargetAssigneeDTO> collectConsigliatoPlayers(JsonNode root, String targetKey) {
