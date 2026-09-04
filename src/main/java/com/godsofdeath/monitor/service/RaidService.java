@@ -92,7 +92,11 @@ public class RaidService {
 
             String bossPrefix = extractBossPrefix(unitId);   // es. "GuildBoss7"
             String bossTypeCapture = type;                    // per lambda (effectively final)
-            String groupKey = bossPrefix + "|" + rarity;
+            // Include type in the key so that two different bosses sharing the same GuildBossX
+            // prefix (e.g. HiveTyrantKronos and HiveTyrantLeviathan both under GuildBoss2) are
+            // kept in separate groups.  For SideBoss entries, type IS the parent boss type, so
+            // minis are still correctly grouped with their own parent boss.
+            String groupKey = bossPrefix + "|" + rarity + "|" + type;
             typeGroups.computeIfAbsent(groupKey, k -> {
                 String lbl = "Legendary".equals(rarity)
                         ? "L" + (++legendaryCounter[0])
@@ -149,10 +153,13 @@ public class RaidService {
         String playerType = currentPlayer != null ? currentPlayer.getPlayerType() : null;
 
         // --- Costruzione bossGroups ---
-        // I gruppi scheletro (fromAssignment=true) passano sempre il filtro anche senza dati reali
+        // Mostra solo gruppi configurati dall'assignment: skeleton (fromAssignment) o gruppi reali
+        // il cui bossType è stato riconosciuto come encounter di questa stagione (configuredByAssignment).
+        // Gruppi con dati reali ma non in config (es. boss di stagioni precedenti nello stesso API
+        // prefix, come HiveTyrantLeviathan vs HiveTyrantKronos) vengono esclusi.
         List<BossGroupDTO> bossGroups = typeGroups.entrySet().stream()
                 .filter(e -> e.getValue().fromAssignment
-                          || e.getValue().units.values().stream().anyMatch(u -> u.guildAttackCount > 0))
+                          || e.getValue().configuredByAssignment)
                 .filter(e -> !hiddenEncounterKeys.contains(e.getValue().rarity + "|" + e.getValue().bossType))
                 .map(e -> buildBossGroup(e.getKey(), e.getValue(), currentUserId, playerAssignments, hiddenEncounterKeys, playerType))
                 .filter(bg -> !bg.getEncounters().isEmpty())
@@ -441,6 +448,7 @@ public class RaidService {
                     // (apiType stale/diversa variante stagionale): il label viene dall'assignment,
                     // non dal contatore live, quindi è sempre corretto.
                     existing.label = levelDesc;
+                    existing.configuredByAssignment = true;
                     if (trustedMatch) {
                         // Match fidato (stesso apiType): completa eventuali mini mancanti
                         // (0 attacchi nell'API) usando la lista mini salvata, che si riferisce
@@ -488,10 +496,15 @@ public class RaidService {
     }
 
     /**
-     * Builds a Set of "rarity|apiType__miniType" keys for sides hidden in the latest assignment.
-     * Hidden side keys are stored as "levelId_apiType__miniUnitId"; we resolve rarity from the
-     * assignment JSON (levelDesc starting with "M" → Mythic, else Legendary) so that the same
-     * boss appearing at both Legendary and Mythic tiers is disambiguated correctly.
+     * Builds a Set of hidden encounter keys used to filter the dashboard.
+     *
+     * Mini key format  : "rarity|parentApiType__miniType"
+     * Boss key format  : "rarity|apiType"
+     *
+     * For bosses, a group is hidden only when ALL configured level slots (e.g. both L3 and L5
+     * for HiveTyrantKronos) are marked hidden.  Hiding just one slot (e.g. L3) while another
+     * slot (L5) is visible means the TypeGroup should remain visible — there is only one
+     * TypeGroup per (rarity, bossType) in the dashboard.
      */
     private Set<String> buildHiddenEncounterKeys(Optional<AssignmentDocument> assignmentDoc) {
         if (assignmentDoc.isEmpty()) return Collections.emptySet();
@@ -499,8 +512,9 @@ public class RaidService {
             List<String> sideKeys = hiddenSideRepository.findByAssignmentName(assignmentDoc.get().getName());
             if (sideKeys.isEmpty()) return Collections.emptySet();
 
-            // Build "levelId_apiType" → rarity from stats.bosses in the assignment JSON
-            Map<String, String> levelKeyToRarity = new HashMap<>();
+            // Build "levelId_apiType" → rarity AND "rarity|apiType" → all configured levelIds
+            Map<String, String>       levelKeyToRarity   = new HashMap<>();
+            Map<String, Set<Integer>> allConfiguredSlots = new HashMap<>();
             try {
                 JsonNode root = objectMapper.readTree(assignmentDoc.get().getAssignmentData());
                 JsonNode bossesNode = root.path("stats").path("bosses");
@@ -510,37 +524,57 @@ public class RaidService {
                         String apiType   = b.path("apiType").asText("");
                         String levelDesc = b.path("levelDesc").asText("");
                         if (!apiType.isEmpty()) {
-                            String rarity = levelDesc.startsWith("M") ? "Mythic" : "Legendary";
-                            levelKeyToRarity.put(levelId + "_" + apiType, rarity);
+                            String rarity   = levelDesc.startsWith("M") ? "Mythic" : "Legendary";
+                            String levelKey = levelId + "_" + apiType;
+                            levelKeyToRarity.put(levelKey, rarity);
+                            allConfiguredSlots
+                                    .computeIfAbsent(rarity + "|" + apiType, k -> new HashSet<>())
+                                    .add(levelId);
                         }
                     }
                 }
             } catch (Exception ignored) { }
 
-            Set<String> result = new HashSet<>();
+            // First pass: collect per-type hidden slots
+            Map<String, Set<Integer>> hiddenBossSlots = new HashMap<>();
+            Set<String>               miniHiddenKeys  = new HashSet<>();
+
             for (String key : sideKeys) {
                 int doubleSep = key.indexOf("__");
                 if (doubleSep >= 0) {
                     // Mini key: "levelId_apiType__miniType"
                     String levelApiPart = key.substring(0, doubleSep);
                     String miniPart     = key.substring(doubleSep + 2);
-
                     int firstUnderscore = levelApiPart.indexOf('_');
                     if (firstUnderscore < 0) continue;
                     String apiType = levelApiPart.substring(firstUnderscore + 1);
-
-                    String rarity = levelKeyToRarity.get(levelApiPart);
+                    String rarity  = levelKeyToRarity.get(levelApiPart);
                     if (rarity == null) continue;
-                    result.add(rarity + "|" + apiType + "__" + miniPart);
+                    miniHiddenKeys.add(rarity + "|" + apiType + "__" + miniPart);
                 } else {
                     // Boss key: "levelId_apiType"
                     int firstUnderscore = key.indexOf('_');
                     if (firstUnderscore < 0) continue;
-                    String apiType = key.substring(firstUnderscore + 1);
-
-                    String rarity = levelKeyToRarity.get(key);
+                    String levelIdStr = key.substring(0, firstUnderscore);
+                    String apiType    = key.substring(firstUnderscore + 1);
+                    String rarity     = levelKeyToRarity.get(key);
                     if (rarity == null) continue;
-                    result.add(rarity + "|" + apiType);
+                    try {
+                        int levelId = Integer.parseInt(levelIdStr);
+                        hiddenBossSlots
+                                .computeIfAbsent(rarity + "|" + apiType, k -> new HashSet<>())
+                                .add(levelId);
+                    } catch (NumberFormatException ignored) { }
+                }
+            }
+
+            // Second pass: a boss group is hidden only when every configured slot is hidden
+            Set<String> result = new HashSet<>(miniHiddenKeys);
+            for (Map.Entry<String, Set<Integer>> entry : hiddenBossSlots.entrySet()) {
+                String       rarityApiType = entry.getKey();
+                Set<Integer> configured   = allConfiguredSlots.get(rarityApiType);
+                if (configured != null && entry.getValue().containsAll(configured)) {
+                    result.add(rarityApiType);
                 }
             }
             return result;
@@ -681,7 +715,8 @@ public class RaidService {
         String label;          // "L1", "M2", ecc.
         String rarity;         // "Legendary" o "Mythic"
         String bossType;       // tipo boss dall'API, es. "RogalDorn"
-        boolean fromAssignment; // gruppo scheletro da assignment (nessun dato reale)
+        boolean fromAssignment;       // gruppo scheletro da assignment (nessun dato reale)
+        boolean configuredByAssignment; // gruppo reale riconosciuto dall'assignment (label assegnato)
         List<String> unitOrder = new ArrayList<>();
         Map<String, UnitStats> units = new LinkedHashMap<>();
 

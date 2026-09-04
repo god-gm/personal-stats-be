@@ -96,45 +96,84 @@ public class PlayerPerformancesService {
         }
 
         // 3. Build target-key lookup maps and an ordered target list from the assignment blob.
-        //    bossTypeToTargetKey : apiType               → "{levelId}_{apiType}"
-        //    miniToTargetKey     : "parentType__miniKey" → "{levelId}_{parentType}__{miniKey}"
-        //    orderedTargetKeys   : insertion-ordered list of all target keys
-        //    targetMeta          : targetKey → { label }   (names come from the blob, avgs from API)
-        Map<String, String>       bossTypeToTargetKey = new LinkedHashMap<>();
-        Map<String, String>       miniToTargetKey     = new LinkedHashMap<>();
-        List<String>              orderedTargetKeys   = new ArrayList<>();
-        Map<String, String>       targetLabel         = new LinkedHashMap<>();
-        Map<String, TargetAcc>    targetAccMap        = new LinkedHashMap<>();
+        //
+        //    The same boss can appear at multiple levels in the same season (e.g. Riptide at both
+        //    L1 and M3, HiveTyrant at both L3 and L5).  Using apiType alone as key causes all
+        //    attacks on a boss to be credited to the first level only, breaking assignment % and
+        //    per-target stats.
+        //
+        //    Discriminant: L-levels require Legendary heroes, M-levels require Mythic heroes.
+        //    The saved-blob's levelDesc (starts with "M" → Mythic, else Legendary) determines
+        //    the expected hero-rarity for a level, matching the rarity field in the API entries.
+        //
+        //    bossRarityToTargetKeys : "apiType|levelRarity" → list of "{levelId}_{apiType}"
+        //    miniRarityToTargetKeys : "parentType|levelRarity__miniKey" → list of mini target keys
+        //    When a boss/mini appears at same rarity across multiple levels (e.g. L3/L5 HiveTyrant,
+        //    both Legendary), the attack is credited to ALL matching targets so each level shows
+        //    the correct data.  Assignment % uses the best (most favourable) type across all.
+        Map<String, List<String>> bossRarityToTargetKeys = new LinkedHashMap<>();
+        Map<String, List<String>> miniRarityToTargetKeys = new LinkedHashMap<>();
+        Map<String, String>       targetLabel            = new LinkedHashMap<>();
+        Map<String, TargetAcc>    targetAccMap           = new LinkedHashMap<>();
+
+        // Display deduplication: when the same boss appears at multiple levels (e.g. Riptide at L1
+        // and M3, HiveTyrant at L3 and L5), only the highest occurrence is shown in the UI.
+        // Rule: Mythic > Legendary; within the same rarity, higher levelId wins.
+        // Bosses are iterated in ascending levelId order so the last put() always wins.
+        // Stats accumulators still cover ALL levels (for correct per-level averages).
+        Map<String, String> displayBossTarget = new LinkedHashMap<>(); // apiType → last bossTargetKey
+        Map<String, String> displayMiniTarget = new LinkedHashMap<>(); // "apiType__miniUnitId" → last miniTargetKey
 
         JsonNode bossesNode = root.path("stats").path("bosses");
         if (bossesNode.isArray()) {
             for (JsonNode boss : bossesNode) {
                 String apiType       = boss.path("apiType").asText();
                 int    levelId       = boss.path("levelId").asInt();
+                String levelDesc     = boss.path("levelDesc").asText();
+                String levelRarity   = levelDesc.startsWith("M") ? "Mythic" : "Legendary";
                 String bossTargetKey = levelId + "_" + apiType;
+                String bossRKey      = apiType + "|" + levelRarity;
 
-                if (bossTypeToTargetKey.putIfAbsent(apiType, bossTargetKey) == null) {
-                    orderedTargetKeys.add(bossTargetKey);
-                    targetLabel.put(bossTargetKey, boss.path("bossDesc").asText());
-                    targetAccMap.put(bossTargetKey, new TargetAcc());
-                }
+                targetLabel.put(bossTargetKey, boss.path("bossDesc").asText());
+                targetAccMap.put(bossTargetKey, new TargetAcc());
+                bossRarityToTargetKeys.computeIfAbsent(bossRKey, k -> new ArrayList<>()).add(bossTargetKey);
+                displayBossTarget.put(apiType, bossTargetKey); // last write wins = highest level
 
                 JsonNode minisNode = boss.path("minis");
                 if (minisNode.isArray()) {
                     for (JsonNode mini : minisNode) {
                         String miniUnitId    = mini.path("unitId").asText();
                         String miniTargetKey = bossTargetKey + "__" + miniUnitId;
-                        String compositeKey  = apiType + "__" + miniUnitId;
+                        String miniRKey      = apiType + "|" + levelRarity + "__" + miniUnitId;
 
-                        if (miniToTargetKey.putIfAbsent(compositeKey, miniTargetKey) == null) {
-                            orderedTargetKeys.add(miniTargetKey);
-                            targetLabel.put(miniTargetKey, mini.path("name").asText());
-                            targetAccMap.put(miniTargetKey, new TargetAcc());
-                        }
+                        targetLabel.put(miniTargetKey, mini.path("name").asText());
+                        targetAccMap.put(miniTargetKey, new TargetAcc());
+                        miniRarityToTargetKeys.computeIfAbsent(miniRKey, k -> new ArrayList<>()).add(miniTargetKey);
+                        displayMiniTarget.put(apiType + "__" + miniUnitId, miniTargetKey); // last write wins
                     }
                 }
             }
         }
+
+        // Build orderedTargetKeys from display targets only (one entry per unique boss type).
+        // Sort by the levelId embedded in the display target key ("4_Tervigon" → 4) so the
+        // order is always ascending by level: L4, L5, M1, M2, M3 instead of first-insertion order.
+        List<String> orderedTargetKeys = new ArrayList<>();
+        displayBossTarget.entrySet().stream()
+                .sorted(Comparator.comparingInt(e -> {
+                    String key = e.getValue();
+                    int sep = key.indexOf('_');
+                    try { return sep > 0 ? Integer.parseInt(key.substring(0, sep)) : 0; }
+                    catch (NumberFormatException ignored) { return 0; }
+                }))
+                .forEach(bossEntry -> {
+                    String bossApiType   = bossEntry.getKey();
+                    String bossTargetKey = bossEntry.getValue();
+                    orderedTargetKeys.add(bossTargetKey);
+                    displayMiniTarget.entrySet().stream()
+                            .filter(me -> me.getKey().startsWith(bossApiType + "__"))
+                            .forEach(me -> orderedTargetKeys.add(me.getValue()));
+                });
 
         // 4. Parse assignments: userId → { targetKey → assignmentType }
         Map<String, Map<String, String>> assignmentsMap = new HashMap<>();
@@ -183,32 +222,48 @@ public class PlayerPerformancesService {
 
             // Leg/Myth processing
             if (!isBomb && isLegMyth) {
-                // Resolve target key
-                String targetKey = null;
+                // Resolve all matching target keys using apiType + hero-rarity as discriminant.
+                // This correctly separates encounters of the same boss at L-levels (Legendary
+                // heroes) vs M-levels (Mythic heroes), and accumulates into every level when
+                // the same boss appears at multiple levels of the same rarity (e.g. L3 + L5).
+                List<String> targetKeys = java.util.Collections.emptyList();
                 if ("Boss".equals(encounterType)) {
-                    targetKey = bossTypeToTargetKey.get(type);
+                    targetKeys = bossRarityToTargetKeys.getOrDefault(type + "|" + rarity,
+                            java.util.Collections.emptyList());
                 } else if ("SideBoss".equals(encounterType)) {
-                    targetKey = miniToTargetKey.get(type + "__" + extractMiniKey(unitId));
+                    targetKeys = miniRarityToTargetKeys.getOrDefault(
+                            type + "|" + rarity + "__" + extractMiniKey(unitId),
+                            java.util.Collections.emptyList());
                 }
 
-                // Assignment-type token breakdown
+                // Assignment-type token breakdown: use the best assignment across all matching targets.
                 int[] c = playerCounts.computeIfAbsent(userId, k -> new int[4]);
-                String assignment = null;
-                if (targetKey != null) {
+                String bestAssignment = null;
+                if (!targetKeys.isEmpty()) {
                     Map<String, String> ua = assignmentsMap.get(userId);
-                    if (ua != null) assignment = ua.get(targetKey);
+                    if (ua != null) {
+                        for (String tk : targetKeys) {
+                            String a = ua.get(tk);
+                            if ("consigliato".equals(a)) { bestAssignment = a; break; }
+                            if ("affrontabile".equals(a)) bestAssignment = a;
+                        }
+                    }
                 }
-                if      ("consigliato".equals(assignment))  c[1]++;
-                else if ("affrontabile".equals(assignment)) c[2]++;
-                else                                        c[3]++;
+                if      ("consigliato".equals(bestAssignment))  c[1]++;
+                else if ("affrontabile".equals(bestAssignment)) c[2]++;
+                else                                            c[3]++;
 
-                // Target damage accumulator (Battle only, no killing blow)
-                if ("Battle".equals(damageType) && targetKey != null && targetAccMap.containsKey(targetKey)) {
+                // Target damage accumulator (Battle only, no killing blow).
+                // Accumulate into every matching target so each level shows correct per-player stats.
+                if ("Battle".equals(damageType) && !targetKeys.isEmpty()) {
                     boolean isKillingBlow = "Boss".equals(encounterType)
                             ? remainingHp == 0
                             : "SideBoss".equals(encounterType) && remainingHp == 0 && damageDealt != maxHp;
                     if (!isKillingBlow) {
-                        targetAccMap.get(targetKey).addPlayerHit(userId, damageDealt);
+                        for (String tk : targetKeys) {
+                            TargetAcc acc = targetAccMap.get(tk);
+                            if (acc != null) acc.addPlayerHit(userId, damageDealt);
+                        }
                     }
                 }
             }
