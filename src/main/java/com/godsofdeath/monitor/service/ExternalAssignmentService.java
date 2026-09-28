@@ -57,6 +57,14 @@ public class ExternalAssignmentService {
     }
 
     public GenericResponseDTO<List<String>> getAssignedPlayerIds(String bossIdentifier, String levelDesc) {
+        return resolvePlayerIdsByAssignment(bossIdentifier, levelDesc, "consigliato");
+    }
+
+    public GenericResponseDTO<List<String>> getEngageablePlayerIds(String bossIdentifier, String levelDesc) {
+        return resolvePlayerIdsByAssignment(bossIdentifier, levelDesc, "affrontabile");
+    }
+
+    private GenericResponseDTO<List<String>> resolvePlayerIdsByAssignment(String bossIdentifier, String levelDesc, String assignmentType) {
         if (bossIdentifier == null || bossIdentifier.isBlank()) {
             return GenericResponseDTO.ko("bossIdentifier mancante");
         }
@@ -83,7 +91,7 @@ public class ExternalAssignmentService {
                 return GenericResponseDTO.ko("Boss non riconosciuto in anagrafica");
             }
 
-            List<String> playerIds = collectConsigliatoPlayerIds(root, targetKey);
+            List<String> playerIds = collectPlayerIdsByAssignmentType(root, targetKey, assignmentType);
             return GenericResponseDTO.ok("Assegnazioni recuperate", playerIds);
         } catch (Exception e) {
             return GenericResponseDTO.ko("Boss non riconosciuto in anagrafica");
@@ -229,7 +237,7 @@ public class ExternalAssignmentService {
         return players;
     }
 
-    private List<String> collectConsigliatoPlayerIds(JsonNode root, String targetKey) {
+    private List<String> collectPlayerIdsByAssignmentType(JsonNode root, String targetKey, String assignmentType) {
         JsonNode assignmentsNode = root.get("assignments");
         if (assignmentsNode == null || !assignmentsNode.isObject()) return List.of();
 
@@ -238,10 +246,9 @@ public class ExternalAssignmentService {
         while (it.hasNext()) {
             Map.Entry<String, JsonNode> e = it.next();
             JsonNode targetNode = e.getValue().get(targetKey);
-            if (targetNode == null || !"consigliato".equals(targetNode.asText())) continue;
+            if (targetNode == null || !assignmentType.equals(targetNode.asText())) continue;
 
-            String userId = e.getKey();
-            playerRepository.findById(userId)
+            playerRepository.findById(e.getKey())
                     .filter(p -> "Y".equals(p.getEnabled()))
                     .map(PlayerDocument::getUserId)
                     .ifPresent(playerIds::add);
