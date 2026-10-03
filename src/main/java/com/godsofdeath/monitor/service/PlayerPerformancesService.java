@@ -271,7 +271,7 @@ public class PlayerPerformancesService {
 
         // 5b. Parallel fetch of individual player token info for the "lost tokens" computation.
         //     Season cutoff = last day of season (Tuesday, start+13 days) at 11:30 Rome time.
-        //     Lost tokens = 29 - (used + current + tokens maturing before cutoff).
+        //     Lost tokens = 28 - (used + current + tokens maturing before cutoff).
         Instant now           = Instant.now();
         Instant seasonCutoff  = entries.isEmpty() ? null : computeSeasonCutoff(entries);
         Map<String, long[]> playerTokenData = new ConcurrentHashMap<>();
@@ -378,7 +378,6 @@ public class PlayerPerformancesService {
      * If already at max capacity, no tokens are maturing so returns 0.
      */
     private int computeTokensToMature(long current, long max, long nextTokenInSecs, Instant now, Instant cutoff) {
-        if (current >= max) return 0;
         int count = 0;
         Instant nextTokenTime = now.plusSeconds(nextTokenInSecs);
         while (!nextTokenTime.isAfter(cutoff)) {
@@ -414,7 +413,7 @@ public class PlayerPerformancesService {
 
             long current    = toLong(tokens, "current");
             long max        = toLong(tokens, "max");
-            long nextInSecs = current < max ? toLong(tokens, "nextTokenInSeconds") : 0L;
+            long nextInSecs = current < max ? toLong(tokens, "nextTokenInSeconds") : 12L * 3600;
             return new long[]{current, max, nextInSecs};
         } catch (RestClientException e) {
             log.warn("Tacticus player API call failed: {}", e.getMessage());

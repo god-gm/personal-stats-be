@@ -101,34 +101,44 @@ public class SeasonRankingService {
             playerTargetValidCount.merge(compositeKey, 1, Integer::sum);
         }
 
-        // Pass 3: for each (player, target) pair compute delta = playerAvg_target - guildAvg_target,
-        // then sum across all targets the player attacked.
-        Map<String, Double>  playerDelta   = new HashMap<>();
-        Map<String, Integer> playerAttacks = new HashMap<>();
+        // Pass 3: weighted %PCI per player.
+        // %PCI_total = Σ(PCI_target × validCount_target) / Σ(validCount_target)  [× 100 → %]
+        // where PCI_target = (playerAvg_target - guildAvg_target) / guildAvg_target
+        // Targets with guildAvg == 0 are skipped (no guild data → can't normalise).
+        Map<String, Double>  pciNumerator  = new HashMap<>();  // Σ(PCI_target × validCount)
+        Map<String, Integer> totalValid    = new HashMap<>();  // Σ(validCount)
 
         for (Map.Entry<String, Integer> entry : playerTargetValidCount.entrySet()) {
-            String compositeKey = entry.getKey();
-            int    sep          = compositeKey.indexOf("|||");
-            String userId       = compositeKey.substring(0, sep);
-            String targetKey    = compositeKey.substring(sep + 3);
+            String compositeKey   = entry.getKey();
+            int    sep            = compositeKey.indexOf("|||");
+            String userId         = compositeKey.substring(0, sep);
+            String targetKey      = compositeKey.substring(sep + 3);
+
+            double targetGuildAvg = guildAvg.getOrDefault(targetKey, 0.0);
+            if (targetGuildAvg == 0.0) continue;
 
             int    validCount = entry.getValue();
             long   dmgSum     = playerTargetDmgSum.getOrDefault(compositeKey, 0L);
             double playerAvg  = (double) dmgSum / validCount;
-            double delta      = playerAvg - guildAvg.getOrDefault(targetKey, 0.0);
+            double pciTarget  = (playerAvg - targetGuildAvg) / targetGuildAvg;
 
-            playerDelta.merge(userId, delta, Double::sum);
-            playerAttacks.merge(userId, validCount, Integer::sum);
+            pciNumerator.merge(userId, pciTarget * validCount, Double::sum);
+            totalValid.merge(userId, validCount, Integer::sum);
         }
 
         List<PlayerRankDTO> ranking = enabledPlayers.values().stream()
-                .map(p -> PlayerRankDTO.builder()
-                        .userId(p.getUserId())
-                        .playerName(p.getUserGameName())
-                        .totalDelta(Math.round(playerDelta.getOrDefault(p.getUserId(), 0.0) * 100.0) / 100.0)
-                        .validAttackCount(playerAttacks.getOrDefault(p.getUserId(), 0))
-                        .build())
-                .sorted(Comparator.comparingDouble(PlayerRankDTO::getTotalDelta).reversed())
+                .map(p -> {
+                    String uid        = p.getUserId();
+                    int    tv         = totalValid.getOrDefault(uid, 0);
+                    double pciPercent = tv > 0 ? (pciNumerator.getOrDefault(uid, 0.0) / tv) * 100.0 : 0.0;
+                    return PlayerRankDTO.builder()
+                            .userId(uid)
+                            .playerName(p.getUserGameName())
+                            .pciPercent(Math.round(pciPercent * 100.0) / 100.0)
+                            .validAttackCount(tv)
+                            .build();
+                })
+                .sorted(Comparator.comparingDouble(PlayerRankDTO::getPciPercent).reversed())
                 .collect(Collectors.toList());
 
         return GenericResponseDTO.ok("Classifica recuperata", SeasonRankingDTO.builder()

@@ -8,6 +8,6 @@ import lombok.Data;
 public class PlayerRankDTO {
     private String userId;
     private String playerName;
-    private double totalDelta;
+    private double pciPercent;
     private int    validAttackCount;
 }
