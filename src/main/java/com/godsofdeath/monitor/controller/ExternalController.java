@@ -11,6 +11,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * API dedicata per sistemi esterni: nessuna autenticazione JWT (rotta permitAll in
@@ -60,5 +61,21 @@ public class ExternalController {
         GenericResponseDTO<List<String>> response = externalAssignmentService.getEngageablePlayerIds(bossIdentifier, levelDesc);
         int status = "OK".equals(response.getStatus()) ? 200 : 400;
         return ResponseEntity.status(status).body(response);
+    }
+
+    @GetMapping("/raid-data")
+    @Operation(summary = "Proxy verso l'API Tacticus /guildRaid: autentica con TEMP_KEY e usa l'apiKey fornita per la chiamata")
+    public ResponseEntity<Object> getRaidData(
+            @RequestHeader(value = "X-External-Api-Key", required = false) String authKey,
+            @Parameter(description = "API key Tacticus da usare per la chiamata alla guild raid")
+            @RequestParam String apiKey) {
+
+        if (!externalAssignmentService.isValidTempKey(authKey)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(GenericResponseDTO.denied("API key non valida"));
+        }
+
+        Map<String, Object> raidData = externalAssignmentService.fetchRawRaidData(apiKey);
+        return ResponseEntity.ok(raidData);
     }
 }

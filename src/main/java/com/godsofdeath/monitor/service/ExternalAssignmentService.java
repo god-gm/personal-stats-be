@@ -262,6 +262,29 @@ public class ExternalAssignmentService {
                 .isPresent();
     }
 
+    public boolean isValidTempKey(String providedKey) {
+        return sysConfigRepository.getValue("TEMP_KEY")
+                .filter(expected -> expected.equals(providedKey))
+                .isPresent();
+    }
+
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> fetchRawRaidData(String tacticusApiKey) {
+        RestTemplate rt = new RestTemplate();
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-API-KEY", tacticusApiKey);
+        headers.set("accept", "application/json");
+        ResponseEntity<Map> response = rt.exchange(
+                tacticusBaseUrl + "/guildRaid",
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                Map.class);
+        if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
+            throw new IllegalStateException("Chiamata API Tacticus fallita");
+        }
+        return response.getBody();
+    }
+
     @SuppressWarnings("unchecked")
     private int fetchCurrentSeason() {
         String guildApiKey = sysConfigRepository.getValue("API-KEY")
