@@ -28,7 +28,7 @@ public class SeasonRankingService {
     /**
      * Classifica gilda per la season selezionata.
      * Ogni giocatore accumula delta = (danno_attacco - media_gilda_target) per ogni attacco valido:
-     * Battle only, Legendary/Mythic only, killing blow esclusi per le stesse regole del dashboard.
+     * Battle only, tutti i target Mythic + solo gli ultimi 2 target Legendary, killing blow esclusi.
      */
     public GenericResponseDTO<SeasonRankingDTO> getSeasonRanking(Integer seasonNumber) {
         String guildApiKey = sysConfigRepository.getValue("API-KEY")
@@ -48,6 +48,7 @@ public class SeasonRankingService {
                 .collect(Collectors.toMap(PlayerDocument::getUserId, p -> p));
 
         List<Map<String, Object>> entries = getEntries(seasonData);
+        Set<String> lastLegendary = lastLegendaryGroups(entries);
 
         // Pass 1: guild average per target key (unitId|rarity), excluding killing blows
         Map<String, Long>    guildDamageSum   = new HashMap<>();
@@ -56,7 +57,7 @@ public class SeasonRankingService {
         for (Map<String, Object> e : entries) {
             if (!"Battle".equals(str(e, "damageType"))) continue;
             String rarity = str(e, "rarity");
-            if (!"Legendary".equals(rarity) && !"Mythic".equals(rarity)) continue;
+            if (!isRankedTarget(e, lastLegendary)) continue;
             if (!enabledPlayers.containsKey(str(e, "userId"))) continue;
 
             String unitId        = str(e, "unitId");
@@ -85,7 +86,7 @@ public class SeasonRankingService {
         for (Map<String, Object> e : entries) {
             if (!"Battle".equals(str(e, "damageType"))) continue;
             String rarity = str(e, "rarity");
-            if (!"Legendary".equals(rarity) && !"Mythic".equals(rarity)) continue;
+            if (!isRankedTarget(e, lastLegendary)) continue;
             String userId = str(e, "userId");
             if (!enabledPlayers.containsKey(userId)) continue;
 
@@ -149,9 +150,109 @@ public class SeasonRankingService {
     }
 
     /**
+     * Classifica gilda limitata a un tipo di encounter: mode "BOSS" (encounterType Boss) o
+     * "PRIMES" (encounterType SideBoss). Stesse regole di getSeasonRanking (Battle, tutti i Mythic +
+     * ultimi 2 target Legendary calcolati sull'intera season, no killing blow, media gilda per
+     * target), ma solo gli attacchi del tipo scelto contribuiscono. I giocatori senza attacchi
+     * validi su quel tipo non compaiono in classifica.
+     */
+    public GenericResponseDTO<SeasonRankingDTO> getSeasonRankingByType(Integer seasonNumber, String mode) {
+        final String encounterFilter;
+        if ("BOSS".equalsIgnoreCase(mode))        encounterFilter = "Boss";
+        else if ("PRIMES".equalsIgnoreCase(mode)) encounterFilter = "SideBoss";
+        else return GenericResponseDTO.ko("mode non valido (atteso BOSS o PRIMES)");
+
+        String guildApiKey = sysConfigRepository.getValue("API-KEY")
+                .orElseThrow(() -> new IllegalStateException("API-KEY gilda non configurata"));
+
+        Map<String, Object> currentData = callApi(guildApiKey, null);
+        int currentSeason = ((Number) currentData.getOrDefault("season", 0)).intValue();
+        List<Integer> availableSeasons = List.of(currentSeason, currentSeason - 1, currentSeason - 2);
+
+        int selectedSeason = (seasonNumber != null) ? seasonNumber : currentSeason;
+        Map<String, Object> seasonData = (selectedSeason == currentSeason)
+                ? currentData : callApi(guildApiKey, selectedSeason);
+
+        Map<String, PlayerDocument> enabledPlayers = playerRepository.findAllEnabled()
+                .stream()
+                .collect(Collectors.toMap(PlayerDocument::getUserId, p -> p));
+
+        List<Map<String, Object>> entries = getEntries(seasonData);
+        // Gli "ultimi 2 Legendary" si determinano su tutte le entry, non solo sul tipo filtrato.
+        Set<String> lastLegendary = lastLegendaryGroups(entries);
+
+        Map<String, Long>    guildDamageSum   = new HashMap<>();
+        Map<String, Integer> guildAttackCount = new HashMap<>();
+        Map<String, Long>    playerDmgSum     = new HashMap<>();
+        Map<String, Integer> playerValidCount = new HashMap<>();
+
+        for (Map<String, Object> e : entries) {
+            if (!"Battle".equals(str(e, "damageType"))) continue;
+            if (!encounterFilter.equals(str(e, "encounterType"))) continue;
+            if (!isRankedTarget(e, lastLegendary)) continue;
+            String userId = str(e, "userId");
+            if (!enabledPlayers.containsKey(userId)) continue;
+
+            long damageDealt = toLong(e, "damageDealt");
+            if (isKillingBlow(str(e, "encounterType"), toLong(e, "remainingHp"), toLong(e, "maxHp"), damageDealt)) continue;
+
+            String targetKey = str(e, "unitId") + "|" + str(e, "rarity");
+            guildDamageSum.merge(targetKey, damageDealt, Long::sum);
+            guildAttackCount.merge(targetKey, 1, Integer::sum);
+
+            String compositeKey = userId + "|||" + targetKey;
+            playerDmgSum.merge(compositeKey, damageDealt, Long::sum);
+            playerValidCount.merge(compositeKey, 1, Integer::sum);
+        }
+
+        Map<String, Double>  pciNumerator = new HashMap<>();
+        Map<String, Integer> totalValid   = new HashMap<>();
+
+        for (Map.Entry<String, Integer> entry : playerValidCount.entrySet()) {
+            String compositeKey = entry.getKey();
+            int    sep          = compositeKey.indexOf("|||");
+            String userId       = compositeKey.substring(0, sep);
+            String targetKey    = compositeKey.substring(sep + 3);
+
+            int    cnt      = guildAttackCount.getOrDefault(targetKey, 0);
+            double guildAvg = cnt > 0 ? (double) guildDamageSum.getOrDefault(targetKey, 0L) / cnt : 0.0;
+            if (guildAvg == 0.0) continue;
+
+            int    validCount = entry.getValue();
+            double playerAvg  = (double) playerDmgSum.getOrDefault(compositeKey, 0L) / validCount;
+            double pciTarget  = (playerAvg - guildAvg) / guildAvg;
+
+            pciNumerator.merge(userId, pciTarget * validCount, Double::sum);
+            totalValid.merge(userId, validCount, Integer::sum);
+        }
+
+        List<PlayerRankDTO> ranking = enabledPlayers.values().stream()
+                .filter(p -> totalValid.getOrDefault(p.getUserId(), 0) > 0)
+                .map(p -> {
+                    String uid        = p.getUserId();
+                    int    tv         = totalValid.get(uid);
+                    double pciPercent = (pciNumerator.getOrDefault(uid, 0.0) / tv) * 100.0;
+                    return PlayerRankDTO.builder()
+                            .userId(uid)
+                            .playerName(p.getUserGameName())
+                            .pciPercent(Math.round(pciPercent * 100.0) / 100.0)
+                            .validAttackCount(tv)
+                            .build();
+                })
+                .sorted(Comparator.comparingDouble(PlayerRankDTO::getPciPercent).reversed())
+                .collect(Collectors.toList());
+
+        return GenericResponseDTO.ok("Classifica recuperata", SeasonRankingDTO.builder()
+                .season(selectedSeason)
+                .availableSeasons(availableSeasons)
+                .ranking(ranking)
+                .build());
+    }
+
+    /**
      * Storico incontri di un giocatore per una season.
      * Restituisce tutti gli attacchi Battle (no bombe), senza altre esclusioni,
-     * marcando ciascuno se escluso dalla classifica (killing blow o rarity < Legendary).
+     * marcando ciascuno se escluso dalla classifica (killing blow, target Legendary non tra gli ultimi 2, rarity < Legendary).
      */
     public GenericResponseDTO<SeasonPlayerDetailDTO> getPlayerDetail(int seasonNumber, String userId) {
         String guildApiKey = sysConfigRepository.getValue("API-KEY")
@@ -172,13 +273,14 @@ public class SeasonRankingService {
 
         // Pass 1: guild average per target (unitId|rarity), same rules as ranking
         List<Map<String, Object>> entries = getEntries(seasonData);
+        Set<String> lastLegendary = lastLegendaryGroups(entries);
         Map<String, Long>    guildDmgSum   = new HashMap<>();
         Map<String, Integer> guildAtkCount = new HashMap<>();
 
         for (Map<String, Object> e : entries) {
             if (!"Battle".equals(str(e, "damageType"))) continue;
             String rarity = str(e, "rarity");
-            if (!"Legendary".equals(rarity) && !"Mythic".equals(rarity)) continue;
+            if (!isRankedTarget(e, lastLegendary)) continue;
             if (!enabledPlayers.containsKey(str(e, "userId"))) continue;
 
             String unitId        = str(e, "unitId");
@@ -207,7 +309,7 @@ public class SeasonRankingService {
             long   maxHp         = toLong(e, "maxHp");
 
             boolean isKB     = isKillingBlow(encounterType, remainingHp, maxHp, damageDealt);
-            boolean excluded = isKB || (!"Legendary".equals(rarity) && !"Mythic".equals(rarity));
+            boolean excluded = isKB || !isRankedTarget(e, lastLegendary);
             String  name     = resolveName(unitId, !"Boss".equals(encounterType));
 
             String key        = unitId + "|" + rarity;
@@ -239,6 +341,42 @@ public class SeasonRankingService {
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private static final int RANKED_LEGENDARY_TARGETS = 2;
+
+    /**
+     * Gruppi target (boss + relativi mini, stessa chiave di RaidService: prefisso|type) degli ultimi
+     * RANKED_LEGENDARY_TARGETS target Legendary della season, in ordine di prima comparsa nelle entry
+     * (stesso ordine con cui la dashboard assegna le etichette L1, L2, ...). Bombe ignorate.
+     */
+    private Set<String> lastLegendaryGroups(List<Map<String, Object>> entries) {
+        LinkedHashSet<String> groups = new LinkedHashSet<>();
+        for (Map<String, Object> e : entries) {
+            if (!"Legendary".equals(str(e, "rarity"))) continue;
+            if ("Bomb".equals(str(e, "damageType"))) continue;
+            groups.add(legendaryGroupKey(e));
+        }
+        List<String> all = new ArrayList<>(groups);
+        return new HashSet<>(all.subList(Math.max(0, all.size() - RANKED_LEGENDARY_TARGETS), all.size()));
+    }
+
+    private String legendaryGroupKey(Map<String, Object> e) {
+        String unitId = str(e, "unitId");
+        String prefix = unitId;
+        if (unitId.startsWith("GuildBoss")) {
+            int i = "GuildBoss".length();
+            while (i < unitId.length() && Character.isDigit(unitId.charAt(i))) i++;
+            prefix = unitId.substring(0, i);
+        }
+        return prefix + "|" + str(e, "type");
+    }
+
+    /** Mythic: sempre valido. Legendary: solo se appartiene agli ultimi target Legendary. Altre rarity: no. */
+    private boolean isRankedTarget(Map<String, Object> e, Set<String> lastLegendary) {
+        String rarity = str(e, "rarity");
+        if ("Mythic".equals(rarity)) return true;
+        return "Legendary".equals(rarity) && lastLegendary.contains(legendaryGroupKey(e));
+    }
 
     private boolean isKillingBlow(String encounterType, long remainingHp, long maxHp, long damageDealt) {
         if ("Boss".equals(encounterType))     return remainingHp == 0;

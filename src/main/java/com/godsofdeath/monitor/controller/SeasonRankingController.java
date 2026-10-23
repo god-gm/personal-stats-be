@@ -21,10 +21,18 @@ public class SeasonRankingController {
     private final SeasonRankingService seasonRankingService;
 
     @GetMapping("/season-ranking")
-    @Operation(summary = "Classifica gilda per una stagione (delta cumulativo per attacco, Legendary/Mythic Battle, no killing blow)")
+    @Operation(summary = "Classifica gilda per una stagione (delta cumulativo per attacco, Battle, tutti i Mythic + ultimi 2 target Legendary, no killing blow)")
     public ResponseEntity<GenericResponseDTO<SeasonRankingDTO>> getSeasonRanking(
             @RequestParam(required = false) Integer seasonNumber) {
         return ResponseEntity.ok(seasonRankingService.getSeasonRanking(seasonNumber));
+    }
+
+    @GetMapping("/season-ranking/by-type")
+    @Operation(summary = "Classifica gilda per una stagione limitata ai soli attacchi su Boss (mode=BOSS) o Primes/SideBoss (mode=PRIMES), stesse regole della classifica totale")
+    public ResponseEntity<GenericResponseDTO<SeasonRankingDTO>> getSeasonRankingByType(
+            @RequestParam(required = false) Integer seasonNumber,
+            @RequestParam String mode) {
+        return ResponseEntity.ok(seasonRankingService.getSeasonRankingByType(seasonNumber, mode));
     }
 
     @GetMapping("/season-player-detail")
