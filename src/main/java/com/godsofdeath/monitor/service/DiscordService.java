@@ -56,7 +56,23 @@ public class DiscordService {
         if (!"OK".equals(loginResult.getStatus())) {
             return GenericResponseDTO.denied("Operativo non riconosciuto.");
         }
+        loginResult.getData().setAvatarUrl(buildAvatarUrl(discordUser));
         return loginResult;
+    }
+
+    private String buildAvatarUrl(DiscordUserResponseDTO user) {
+        if (user.getId() == null) return null;
+        if (user.getAvatar() != null) {
+            String ext = user.getAvatar().startsWith("a_") ? "gif" : "png";
+            return "https://cdn.discordapp.com/avatars/" + user.getId() + "/" + user.getAvatar() + "." + ext;
+        }
+        // Avatar di default Discord (nuovo sistema username: indice = (id >> 22) % 6)
+        try {
+            int idx = (int) ((Long.parseLong(user.getId()) >> 22) % 6);
+            return "https://cdn.discordapp.com/embed/avatars/" + idx + ".png";
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private DiscordTokenResponseDTO exchangeCodeForToken(String code) {

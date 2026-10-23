@@ -9,4 +9,5 @@ public class LoginDataDTO {
     private String token;
     private String userGameName;
     private String role;
+    private String avatarUrl;
 }
